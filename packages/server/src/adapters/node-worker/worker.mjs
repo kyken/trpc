@@ -1,16 +1,16 @@
 import { parentPort, workerData } from 'node:worker_threads';
 
-async function transformResponse(response, serialize) {
+async function transformResponse(response, transformer) {
   const transformItem = async (item) => {
     if ('error' in item) {
-      return { ...item, error: await serialize(item.error) };
+      return { ...item, error: await transformer.serialize(item.error) };
     }
     if ('data' in item.result) {
       return {
         ...item,
         result: {
           ...item.result,
-          data: await serialize(item.result.data),
+          data: await transformer.serialize(item.result.data),
         },
       };
     }
@@ -47,9 +47,7 @@ parentPort.on('message', async ({ id, operation, value }) => {
     } else if (typeof transformer.serializeResponse === 'function') {
       result = await transformer.serializeResponse(value);
     } else {
-      result = JSON.stringify(
-        await transformResponse(value, transformer.serialize),
-      );
+      result = JSON.stringify(await transformResponse(value, transformer));
     }
     parentPort.postMessage({ id, result });
   } catch (cause) {

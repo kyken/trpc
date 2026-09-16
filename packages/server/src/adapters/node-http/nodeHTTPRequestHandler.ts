@@ -59,13 +59,19 @@ export function internal_exceptionHandler<
     });
 
     const response = { error: shape };
-    const transformed = opts.router._def._config.transformer.output
-      .serializeAsync
-      ? await transformTRPCResponseAsync(opts.router._def._config, response)
-      : transformTRPCResponse(opts.router._def._config, response);
+    const body = opts.responseBodyEncoder
+      ? await opts.responseBodyEncoder(response)
+      : JSON.stringify(
+          opts.router._def._config.transformer.output.serializeAsync
+            ? await transformTRPCResponseAsync(
+                opts.router._def._config,
+                response,
+              )
+            : transformTRPCResponse(opts.router._def._config, response),
+        );
 
     res.statusCode = shape.data.httpStatus;
-    res.end(JSON.stringify(transformed));
+    res.end(body);
   };
 }
 

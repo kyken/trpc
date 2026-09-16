@@ -13,7 +13,9 @@ import type { HTTPResult } from './internals/httpUtils';
 import {
   fetchHTTPResponse,
   getBody,
+  getBodyAsync,
   getUrl,
+  getUrlAsync,
   resolveHTTPLinkOptions,
 } from './internals/httpUtils';
 import type { Operation, TRPCLink } from './types';
@@ -81,8 +83,12 @@ export function httpBatchStreamLink<TRouter extends AnyRouter>(
             contentTypeHeader: 'application/json',
             trpcAcceptHeader: 'application/jsonl',
             trpcAcceptHeaderKey: opts.streamHeader ?? 'trpc-accept',
-            getUrl,
-            getBody,
+            getUrl: resolvedOpts.transformer.input.serializeAsync
+              ? getUrlAsync
+              : getUrl,
+            getBody: resolvedOpts.transformer.input.serializeAsync
+              ? getBodyAsync
+              : getBody,
             inputs,
             path,
             headers() {

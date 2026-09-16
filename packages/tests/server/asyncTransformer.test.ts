@@ -242,7 +242,8 @@ describe('batching: async superjson up and devalue down', () => {
   test.each(['httpBatchLink', 'httpBatchStreamLink'] as const)(
     '$0',
     async (clientLink) => {
-      const { transformer: input } = createAsyncTransformer(superjson);
+      const { calls: inputCalls, transformer: input } =
+        createAsyncTransformer(superjson);
       const { transformer: output } = createAsyncTransformer(outputBase);
       const transformer: CombinedDataTransformer = { input, output };
       const date = new Date();
@@ -260,6 +261,7 @@ describe('batching: async superjson up and devalue down', () => {
       const result = await ctx.client.hello.query(date);
       expect(result.getTime()).toBe(date.getTime());
       expect((seen.mock.calls[0]![0]! as Date).getTime()).toBe(date.getTime());
+      expect(inputCalls.serialize).toBeGreaterThan(0);
     },
   );
 });

@@ -18,7 +18,41 @@ test('worker pool rejects worker errors and keeps the pool usable', async () => 
     await expect(pool.run('serialize', 'reject')).rejects.toThrow(
       'worker serialization failed',
     );
+    await expect(
+      pool.run('serialize', Symbol('uncloneable')),
+    ).rejects.toThrow();
     await expect(pool.run('serialize', 'ok')).resolves.toEqual({ json: 'ok' });
+  } finally {
+    await pool.close();
+  }
+});
+
+test('worker pool accepts an active job when the queue size is zero', async () => {
+  const pool = new NodeWorkerPool({
+    workerModule,
+    workerEntry,
+    maxWorkers: 1,
+    maxQueueSize: 0,
+  });
+  try {
+    await expect(pool.run('serialize', 'ok')).resolves.toEqual({ json: 'ok' });
+  } finally {
+    await pool.close();
+  }
+});
+
+test('worker pool rejects future jobs after worker startup failure', async () => {
+  const pool = new NodeWorkerPool({
+    workerModule: new URL('./missing-worker-module.mjs', workerModule),
+    workerEntry,
+  });
+  try {
+    await expect(pool.run('serialize', 'ok')).rejects.toThrow(
+      'Cannot find module',
+    );
+    await expect(pool.run('serialize', 'ok')).rejects.toThrow(
+      'Cannot find module',
+    );
   } finally {
     await pool.close();
   }

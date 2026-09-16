@@ -163,9 +163,12 @@ export const getUrlAsync: AsyncGetUrl = async (opts) => {
   if ('inputs' in opts) {
     queryParts.push('batch=1');
   }
-  if (opts.type === 'query' || opts.type === 'subscription') {
+  if (
+    (opts.type === 'query' || opts.type === 'subscription') &&
+    opts.methodOverride !== 'POST'
+  ) {
     const input = await getInputAsync(opts);
-    if (input !== undefined && opts.methodOverride !== 'POST') {
+    if (input !== undefined) {
       queryParts.push(`input=${encodeURIComponent(JSON.stringify(input))}`);
     }
   }

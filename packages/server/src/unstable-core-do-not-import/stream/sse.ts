@@ -367,8 +367,12 @@ export function sseStreamConsumer<TConfig extends ConsumerConfig>(
             controller.close();
             _es = null;
           };
+          const closeAfterError = () => {
+            eventSource.close();
+            _es = null;
+          };
           if (deserializeAsync) {
-            void deserializeQueue.then(close);
+            void deserializeQueue.then(close, closeAfterError);
           } else {
             close();
           }

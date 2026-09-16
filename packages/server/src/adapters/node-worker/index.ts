@@ -67,6 +67,7 @@ export class NodeWorkerPool {
   private readonly queue: WorkerTask[] = [];
   private nextId = 0;
   private closing = false;
+  private startupError?: unknown;
 
   constructor(options: NodeWorkerPoolOptions) {
     const maxWorkers = options.maxWorkers ?? 1;
@@ -105,10 +106,20 @@ export class NodeWorkerPool {
     if (this.closing) {
       return Promise.reject(new Error('Worker pool is closed'));
     }
+    if (this.startupError) {
+      return Promise.reject(this.startupError);
+    }
     if (options.signal?.aborted) {
       return Promise.reject(abortError());
     }
-    if (this.queue.length >= this.options.maxQueueSize) {
+    const activeTasks = this.slots.reduce(
+      (count, slot) => count + (slot.task ? 1 : 0),
+      0,
+    );
+    if (
+      activeTasks + this.queue.length >=
+      this.options.maxWorkers + this.options.maxQueueSize
+    ) {
       return Promise.reject(new Error('Worker pool queue is full'));
     }
 
@@ -240,6 +251,9 @@ export class NodeWorkerPool {
         if (!this.closing) this.spawn(slot.index);
       });
     } else {
+      if (!this.closing && !replace) {
+        this.startupError = cause;
+      }
       for (const task of this.queue.splice(0)) {
         task.reject(cause);
       }
@@ -278,11 +292,16 @@ export class NodeWorkerPool {
       if (!task) return;
       task.slot = slot;
       slot.task = task;
-      slot.worker.postMessage({
-        id: task.id,
-        operation: task.operation,
-        value: task.value,
-      });
+      try {
+        slot.worker.postMessage({
+          id: task.id,
+          operation: task.operation,
+          value: task.value,
+        });
+      } catch (cause) {
+        slot.task = undefined;
+        task.reject(cause);
+      }
     }
   }
 }

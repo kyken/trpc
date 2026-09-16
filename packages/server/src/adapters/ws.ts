@@ -121,6 +121,7 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
 
     const clientSubscriptions = new Map<number | string, AbortController>();
     const abortController = new AbortController();
+    let asyncInboundQueue = Promise.resolve();
 
     if (opts.keepAlive?.enabled) {
       const { pingMs, pongWaitMs } = opts.keepAlive;
@@ -257,6 +258,8 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
       const { path, lastEventId } = msg.params;
       let { input } = msg.params;
       const type = msg.method;
+      const duplicateSubscription =
+        type === 'subscription' && clientSubscriptions.has(id);
 
       if (lastEventId !== undefined) {
         if (isObject(input)) {
@@ -271,6 +274,9 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
         }
       }
       const requestAbortController = new AbortController();
+      if (type === 'subscription' && !duplicateSubscription) {
+        clientSubscriptions.set(id, requestAbortController);
+      }
       run(async () => {
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         const res = await ctxPromise!; // asserts context has been set
@@ -287,6 +293,13 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           signal: requestAbortController.signal,
           batchIndex,
         });
+
+        if (requestAbortController.signal.aborted) {
+          if (clientSubscriptions.get(id) === requestAbortController) {
+            clientSubscriptions.delete(id);
+          }
+          return;
+        }
 
         const isIterableResult =
           isAsyncIterable(result) || isObservable(result);
@@ -322,11 +335,14 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           // if the client got disconnected whilst initializing the subscription
           // no need to send stopped message if the client is disconnected
 
+          if (clientSubscriptions.get(id) === requestAbortController) {
+            clientSubscriptions.delete(id);
+          }
           return;
         }
 
         /* istanbul ignore next -- @preserve */
-        if (clientSubscriptions.has(id)) {
+        if (duplicateSubscription) {
           // duplicate request ids for client
 
           throw new TRPCError({
@@ -339,7 +355,6 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           ? observableToAsyncIterable(result, requestAbortController.signal)
           : result;
 
-        clientSubscriptions.set(id, requestAbortController);
         await respond({
           id,
           jsonrpc,
@@ -427,9 +442,13 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
               type: 'stopped',
             },
           });
-          clientSubscriptions.delete(id);
+          if (clientSubscriptions.get(id) === requestAbortController) {
+            clientSubscriptions.delete(id);
+          }
         }).catch(async (cause) => {
-          clientSubscriptions.delete(id);
+          if (clientSubscriptions.get(id) === requestAbortController) {
+            clientSubscriptions.delete(id);
+          }
           const error = getTRPCErrorFromUnknown(cause);
           opts.onError?.({ error, path, type, ctx, req, input });
           await respond({
@@ -448,7 +467,9 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
         });
       }).catch(async (cause) => {
         // procedure threw an error
-        clientSubscriptions.delete(id);
+        if (clientSubscriptions.get(id) === requestAbortController) {
+          clientSubscriptions.delete(id);
+        }
         const error = getTRPCErrorFromUnknown(cause);
         opts.onError?.({ error, path, type, ctx, req, input });
         await respond({
@@ -569,9 +590,14 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
       };
 
       if (transformer.input.deserializeAsync) {
-        void parseMessagesAsync().then((parsedMsgs) => {
-          parsedMsgs.map((msg, index) => void handleRequest(msg, index));
-        });
+        asyncInboundQueue = asyncInboundQueue
+          .then(async () => {
+            const parsedMsgs = await parseMessagesAsync();
+            parsedMsgs.map((msg, index) => void handleRequest(msg, index));
+          })
+          .catch(() => {
+            // parseMessagesAsync reports parse errors to the client
+          });
       } else {
         const parsedMsgs = run(() => {
           try {
