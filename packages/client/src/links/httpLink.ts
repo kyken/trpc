@@ -3,7 +3,10 @@ import type {
   AnyClientTypes,
   AnyRouter,
 } from '@trpc/server/unstable-core-do-not-import';
-import { transformResult } from '@trpc/server/unstable-core-do-not-import';
+import {
+  transformResult,
+  transformResultAsync,
+} from '@trpc/server/unstable-core-do-not-import';
 import { raceAbortSignals } from '../internals/signals';
 import { TRPCClientError } from '../TRPCClientError';
 import type {
@@ -114,24 +117,33 @@ export function httpLink<TRouter extends AnyRouter = AnyRouter>(
           .then((res) => {
             isDone = true;
             meta = res.meta;
-            const transformed = transformResult(
-              res.json,
-              resolvedOpts.transformer.output,
-            );
+            const handleResult = (
+              transformed: ReturnType<typeof transformResult>,
+            ) => {
+              if (!transformed.ok) {
+                observer.error(
+                  TRPCClientError.from(transformed.error, {
+                    meta,
+                  }),
+                );
+                return;
+              }
+              observer.next({
+                context: res.meta,
+                result: transformed.result,
+              });
+              observer.complete();
+            };
 
-            if (!transformed.ok) {
-              observer.error(
-                TRPCClientError.from(transformed.error, {
-                  meta,
-                }),
-              );
-              return;
+            if (resolvedOpts.transformer.output.deserializeAsync) {
+              return transformResultAsync(
+                res.json,
+                resolvedOpts.transformer.output,
+              ).then(handleResult);
             }
-            observer.next({
-              context: res.meta,
-              result: transformed.result,
-            });
-            observer.complete();
+            return handleResult(
+              transformResult(res.json, resolvedOpts.transformer.output),
+            );
           })
           .catch((cause) => {
             isDone = true;

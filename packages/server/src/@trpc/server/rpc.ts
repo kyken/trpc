@@ -24,4 +24,5 @@ export {
   TRPC_ERROR_CODES_BY_KEY,
   TRPC_ERROR_CODES_BY_NUMBER,
   parseTRPCMessage,
+  parseTRPCMessageAsync,
 } from '../../unstable-core-do-not-import';

@@ -14,7 +14,10 @@ import {
 import type { TRPCResponse } from '../rpc';
 import { isPromise, jsonlStreamProducer } from '../stream/jsonl';
 import { sseHeaders, sseStreamProducer } from '../stream/sse';
-import { transformTRPCResponse } from '../transformer';
+import {
+  transformTRPCResponse,
+  transformTRPCResponseAsync,
+} from '../transformer';
 import {
   abortSignalsAnyPonyfill,
   isAsyncIterable,
@@ -182,6 +185,54 @@ function caughtErrorToData<TRouter extends AnyRouter>(
     untransformedJSON,
   );
   const body = JSON.stringify(transformedJSON);
+  return {
+    error,
+    untransformedJSON,
+    body,
+  };
+}
+
+async function caughtErrorToDataAsync<TRouter extends AnyRouter>(
+  cause: unknown,
+  errorOpts: {
+    opts: Pick<
+      ResolveHTTPRequestOptions<TRouter>,
+      'onError' | 'req' | 'router' | 'responseBodyEncoder'
+    >;
+    ctx: inferRouterContext<TRouter> | undefined;
+    type: ProcedureType | 'unknown';
+    path?: string;
+    input?: unknown;
+  },
+) {
+  const { router, req, onError } = errorOpts.opts;
+  const error = getTRPCErrorFromUnknown(cause);
+  onError?.({
+    error,
+    path: errorOpts.path,
+    input: errorOpts.input,
+    ctx: errorOpts.ctx,
+    type: errorOpts.type,
+    req,
+  });
+  const untransformedJSON = {
+    error: getErrorShape({
+      config: router._def._config,
+      error,
+      type: errorOpts.type,
+      path: errorOpts.path,
+      input: errorOpts.input,
+      ctx: errorOpts.ctx,
+    }),
+  };
+  const body = errorOpts.opts.responseBodyEncoder
+    ? await errorOpts.opts.responseBodyEncoder(untransformedJSON)
+    : JSON.stringify(
+        await transformTRPCResponseAsync(
+          router._def._config,
+          untransformedJSON,
+        ),
+      );
   return {
     error,
     untransformedJSON,
@@ -442,6 +493,20 @@ export async function resolveResponse<TRouter extends AnyRouter>(
             headers,
             untransformedJSON: [res],
           });
+          if (opts.responseBodyEncoder) {
+            const body = await opts.responseBodyEncoder(res);
+            return new Response(body as BodyInit, {
+              status: headResponse.status,
+              headers,
+            });
+          }
+          if (config.transformer.output.serializeAsync) {
+            const transformed = await transformTRPCResponseAsync(config, res);
+            return new Response(JSON.stringify(transformed), {
+              status: headResponse.status,
+              headers,
+            });
+          }
           return new Response(
             JSON.stringify(transformTRPCResponse(config, res)),
             {
@@ -486,6 +551,9 @@ export async function resolveResponse<TRouter extends AnyRouter>(
             ...config.sse,
             data: iterable,
             serialize: (v) => config.transformer.output.serialize(v),
+            serializeAsync: config.transformer.output.serializeAsync
+              ? (v) => config.transformer.output.serializeAsync!(v)
+              : undefined,
             formatError(errorOpts) {
               const error = getTRPCErrorFromUnknown(errorOpts.error);
               const input = call?.result();
@@ -625,6 +693,9 @@ export async function resolveResponse<TRouter extends AnyRouter>(
           };
         }),
         serialize: (data) => config.transformer.output.serialize(data),
+        serializeAsync: config.transformer.output.serializeAsync
+          ? (data) => config.transformer.output.serializeAsync!(data)
+          : undefined,
         onError: (cause) => {
           opts.onError?.({
             error: getTRPCErrorFromUnknown(cause.error),
@@ -730,6 +801,23 @@ export async function resolveResponse<TRouter extends AnyRouter>(
       headers,
     });
 
+    if (opts.responseBodyEncoder) {
+      const body = await opts.responseBodyEncoder(resultAsRPCResponse);
+      return new Response(body as BodyInit, {
+        status: headResponse.status,
+        headers,
+      });
+    }
+    if (config.transformer.output.serializeAsync) {
+      const transformed = await transformTRPCResponseAsync(
+        config,
+        resultAsRPCResponse,
+      );
+      return new Response(JSON.stringify(transformed), {
+        status: headResponse.status,
+        headers,
+      });
+    }
     return new Response(
       JSON.stringify(transformTRPCResponse(config, resultAsRPCResponse)),
       {
@@ -747,11 +835,19 @@ export async function resolveResponse<TRouter extends AnyRouter>(
     // - post body is too large
     // - input deserialization fails
     // - `errorFormatter` return value is malformed
-    const { error, untransformedJSON, body } = caughtErrorToData(cause, {
-      opts,
-      ctx: ctxManager.valueOrUndefined(),
-      type: info?.type ?? 'unknown',
-    });
+    const caughtError =
+      config.transformer.output.serializeAsync || opts.responseBodyEncoder
+        ? await caughtErrorToDataAsync(cause, {
+            opts,
+            ctx: ctxManager.valueOrUndefined(),
+            type: info?.type ?? 'unknown',
+          })
+        : caughtErrorToData(cause, {
+            opts,
+            ctx: ctxManager.valueOrUndefined(),
+            type: info?.type ?? 'unknown',
+          });
+    const { error, untransformedJSON, body } = caughtError;
 
     const headResponse = initResponse({
       ctx,
@@ -762,7 +858,7 @@ export async function resolveResponse<TRouter extends AnyRouter>(
       headers,
     });
 
-    return new Response(body, {
+    return new Response(body as BodyInit, {
       status: headResponse.status,
       headers,
     });

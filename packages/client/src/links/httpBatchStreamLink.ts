@@ -106,9 +106,11 @@ export function httpBatchStreamLink<TRouter extends AnyRouter>(
             // propagate the same error to every operation in the batch.
             const json = (await res.json()) as TRPCResponse;
             if ('error' in json) {
-              json.error = resolvedOpts.transformer.output.deserialize(
-                json.error,
-              );
+              json.error = resolvedOpts.transformer.output.deserializeAsync
+                ? await resolvedOpts.transformer.output.deserializeAsync(
+                    json.error,
+                  )
+                : resolvedOpts.transformer.output.deserialize(json.error);
             }
 
             return batchOps.map((): Promise<HTTPResult> =>
@@ -128,6 +130,10 @@ export function httpBatchStreamLink<TRouter extends AnyRouter>(
             from: res.body!,
             deserialize: (data) =>
               resolvedOpts.transformer.output.deserialize(data),
+            deserializeAsync: resolvedOpts.transformer.output.deserializeAsync
+              ? async (data) =>
+                  await resolvedOpts.transformer.output.deserializeAsync?.(data)
+              : undefined,
             // onError: console.error,
             formatError(opts) {
               const error = opts.error as TRPCErrorShape;

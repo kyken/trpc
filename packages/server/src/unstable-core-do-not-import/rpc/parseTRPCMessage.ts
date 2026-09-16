@@ -86,3 +86,48 @@ export function parseTRPCMessage(
     },
   };
 }
+
+/**
+ * Async counterpart to {@link parseTRPCMessage}.
+ */
+export async function parseTRPCMessageAsync(
+  obj: unknown,
+  transformer: CombinedDataTransformer,
+): Promise<TRPCClientOutgoingMessage> {
+  assertIsObject(obj);
+
+  const { id, jsonrpc, method, params } = obj;
+  assertIsRequestId(id);
+  assertIsJSONRPC2OrUndefined(jsonrpc);
+
+  if (method === 'subscription.stop') {
+    return {
+      id,
+      jsonrpc,
+      method,
+    };
+  }
+  assertIsProcedureType(method);
+  assertIsObject(params);
+  const { input: rawInput, path, lastEventId } = params;
+
+  assertIsString(path);
+  if (lastEventId !== undefined) {
+    assertIsString(lastEventId);
+  }
+
+  const input = transformer.input.deserializeAsync
+    ? await transformer.input.deserializeAsync(rawInput)
+    : transformer.input.deserialize(rawInput);
+
+  return {
+    id,
+    jsonrpc,
+    method,
+    params: {
+      input,
+      path,
+      lastEventId,
+    },
+  };
+}

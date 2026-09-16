@@ -9,9 +9,11 @@ import type {
   TRPCResponseMessage,
 } from '@trpc/server/unstable-core-do-not-import';
 import {
+  isPromise,
   run,
   sleep,
   transformResult,
+  transformResultAsync,
 } from '@trpc/server/unstable-core-do-not-import';
 import { TRPCClientError } from '../../../TRPCClientError';
 import type { TRPCConnectionState } from '../../internals/subscriptions';
@@ -195,32 +197,63 @@ export class WsClient {
       OperationResultEnvelope<unknown, TRPCClientError<AnyTRPCRouter>>,
       TRPCClientError<AnyTRPCRouter>
     >((observer) => {
-      const abort = this.batchSend(
-        {
-          id,
-          method: type,
-          params: {
-            input: transformer.input.serialize(input),
-            path,
-            lastEventId,
-          },
-        },
-        {
-          ...observer,
-          next(event) {
-            const transformed = transformResult(event, transformer.output);
+      let responseQueue: Promise<void> | undefined;
+      const handleResult = (
+        transformed: ReturnType<typeof transformResult>,
+      ) => {
+        if (!transformed.ok) {
+          observer.error(TRPCClientError.from(transformed.error));
+          return;
+        }
 
-            if (!transformed.ok) {
-              observer.error(TRPCClientError.from(transformed.error));
-              return;
-            }
+        observer.next({
+          result: transformed.result,
+        });
+      };
+      const callbacks: TCallbacks = {
+        ...observer,
+        next(event) {
+          if (transformer.output.deserializeAsync) {
+            responseQueue = (responseQueue ?? Promise.resolve()).then(
+              async () => {
+                handleResult(
+                  await transformResultAsync(event, transformer.output),
+                );
+              },
+            );
+            return responseQueue;
+          }
 
-            observer.next({
-              result: transformed.result,
-            });
-          },
+          return handleResult(transformResult(event, transformer.output));
         },
-      );
+      };
+
+      const abort = transformer.input.serializeAsync
+        ? this.batchSendAsync(
+            transformer.input.serializeAsync(input).then((serializedInput) => ({
+              id,
+              method: type,
+              params: {
+                input: serializedInput,
+                path,
+                lastEventId,
+              },
+            })),
+            id,
+            callbacks,
+          )
+        : this.batchSend(
+            {
+              id,
+              method: type,
+              params: {
+                input: transformer.input.serialize(input),
+                path,
+                lastEventId,
+              },
+            },
+            callbacks,
+          );
 
       const onAbort = () => observer.complete();
       if (signal?.aborted) {
@@ -372,22 +405,32 @@ export class WsClient {
     const request = this.requestManager.getPendingRequest(message.id);
     if (!request) return;
 
-    request.callbacks.next(message);
+    const complete = () => {
+      let completed = true;
+      if ('result' in message && request.message.method === 'subscription') {
+        if (message.result.type === 'data') {
+          request.message.params.lastEventId = message.result.id;
+        }
 
-    let completed = true;
-    if ('result' in message && request.message.method === 'subscription') {
-      if (message.result.type === 'data') {
-        request.message.params.lastEventId = message.result.id;
+        if (message.result.type !== 'stopped') {
+          completed = false;
+        }
       }
 
-      if (message.result.type !== 'stopped') {
-        completed = false;
+      if (completed) {
+        request.callbacks.complete();
+        this.requestManager.delete(message.id);
       }
-    }
+    };
 
-    if (completed) {
-      request.callbacks.complete();
-      this.requestManager.delete(message.id);
+    const next = request.callbacks.next(message);
+    if (isPromise(next)) {
+      void next.then(complete).catch((cause) => {
+        request.callbacks.error(TRPCClientError.from(cause as Error));
+        this.requestManager.delete(message.id);
+      });
+    } else {
+      complete();
     }
   }
 
@@ -443,5 +486,47 @@ export class WsClient {
     });
 
     return this.requestManager.register(message, callbacks);
+  }
+
+  private batchSendAsync(
+    messagePromise: Promise<TRPCClientOutgoingMessage>,
+    messageId: number,
+    callbacks: TCallbacks,
+  ) {
+    let isAborted = false;
+    let unregister: (() => void) | undefined;
+
+    this.inactivityTimeout.reset();
+
+    void run(async () => {
+      try {
+        const message = await messagePromise;
+        if (isAborted) return;
+
+        unregister = this.requestManager.register(message, callbacks);
+        if (isAborted) {
+          unregister();
+          return;
+        }
+
+        if (!this.activeConnection.isOpen()) {
+          await this.open();
+        }
+        await sleep(0);
+
+        if (!this.requestManager.hasOutgoingRequests()) return;
+
+        this.send(this.requestManager.flush().map(({ message }) => message));
+      } catch (err) {
+        if (isAborted) return;
+        this.requestManager.delete(messageId);
+        callbacks.error(TRPCClientError.from(err as Error));
+      }
+    });
+
+    return () => {
+      isAborted = true;
+      unregister?.();
+    };
   }
 }
