@@ -4,7 +4,6 @@ import type {
   DataTransformerOptions,
   TypeError,
 } from '@trpc/server/unstable-core-do-not-import';
-import { getDataTransformer } from '@trpc/server/unstable-core-do-not-import';
 
 /**
  * @internal
@@ -67,5 +66,11 @@ export function getTransformer(
       },
     };
   }
-  return getDataTransformer(_transformer);
+  if ('input' in _transformer) {
+    return _transformer;
+  }
+  return {
+    input: _transformer,
+    output: _transformer,
+  };
 }

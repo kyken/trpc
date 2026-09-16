@@ -551,9 +551,7 @@ export async function resolveResponse<TRouter extends AnyRouter>(
             ...config.sse,
             data: iterable,
             serialize: (v) => config.transformer.output.serialize(v),
-            serializeAsync: config.transformer.output.serializeAsync
-              ? (v) => config.transformer.output.serializeAsync!(v)
-              : undefined,
+            serializeAsync: config.transformer.output.serializeAsync,
             formatError(errorOpts) {
               const error = getTRPCErrorFromUnknown(errorOpts.error);
               const input = call?.result();
@@ -693,9 +691,7 @@ export async function resolveResponse<TRouter extends AnyRouter>(
           };
         }),
         serialize: (data) => config.transformer.output.serialize(data),
-        serializeAsync: config.transformer.output.serializeAsync
-          ? (data) => config.transformer.output.serializeAsync!(data)
-          : undefined,
+        serializeAsync: config.transformer.output.serializeAsync,
         onError: (cause) => {
           opts.onError?.({
             error: getTRPCErrorFromUnknown(cause.error),

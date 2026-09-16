@@ -36,9 +36,7 @@ export {
   type MiddlewareBuilder as TRPCMiddlewareBuilder,
   type AnyMiddlewareFunction as AnyTRPCMiddlewareFunction,
   type CombinedDataTransformer as TRPCCombinedDataTransformer,
-  type CombinedDataTransformerOptions as TRPCCombinedDataTransformerOptions,
   type DataTransformer as TRPCDataTransformer,
-  type AsyncDataTransformer as TRPCAsyncDataTransformer,
   type ProcedureType as TRPCProcedureType,
   type AnyMutationProcedure as AnyTRPCMutationProcedure,
   type AnyQueryProcedure as AnyTRPCQueryProcedure,
@@ -109,11 +107,6 @@ export type {
    * @deprecated use `TRPCDataTransformer` instead
    */
   DataTransformer,
-  /**
-   * @deprecated use `TRPCAsyncDataTransformer` instead
-   */
-  AsyncDataTransformer,
-
   /**
    * @deprecated This is a utility type will be removed in v12
    */

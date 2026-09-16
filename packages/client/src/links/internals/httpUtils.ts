@@ -125,7 +125,7 @@ export type ContentOptions = {
   getBody: AsyncGetBody;
 };
 
-export const getUrl: GetUrl = (opts) => {
+function getUrlWithInput(opts: HTTPBaseRequestOptions, input: unknown) {
   const parts = opts.url.split('?') as [string, string?];
   const base = parts[0].replace(/\/$/, ''); // Remove any trailing slashes
 
@@ -138,44 +138,28 @@ export const getUrl: GetUrl = (opts) => {
   if ('inputs' in opts) {
     queryParts.push('batch=1');
   }
-  if (opts.type === 'query' || opts.type === 'subscription') {
-    const input = getInput(opts);
-    if (input !== undefined && opts.methodOverride !== 'POST') {
-      queryParts.push(`input=${encodeURIComponent(JSON.stringify(input))}`);
-    }
+  if (input !== undefined) {
+    queryParts.push(`input=${encodeURIComponent(JSON.stringify(input))}`);
   }
   if (queryParts.length) {
     url += '?' + queryParts.join('&');
   }
   return url;
-};
+}
 
-export const getUrlAsync: AsyncGetUrl = async (opts) => {
-  const parts = opts.url.split('?') as [string, string?];
-  const base = parts[0].replace(/\/$/, ''); // Remove any trailing slashes
-
-  let url = base + '/' + opts.path;
-  const queryParts: string[] = [];
-
-  if (parts[1]) {
-    queryParts.push(parts[1]);
-  }
-  if ('inputs' in opts) {
-    queryParts.push('batch=1');
-  }
-  if (
+function hasQueryInput(opts: HTTPBaseRequestOptions) {
+  return (
     (opts.type === 'query' || opts.type === 'subscription') &&
     opts.methodOverride !== 'POST'
-  ) {
-    const input = await getInputAsync(opts);
-    if (input !== undefined) {
-      queryParts.push(`input=${encodeURIComponent(JSON.stringify(input))}`);
-    }
-  }
-  if (queryParts.length) {
-    url += '?' + queryParts.join('&');
-  }
-  return url;
+  );
+}
+
+export const getUrl: GetUrl = (opts) =>
+  getUrlWithInput(opts, hasQueryInput(opts) ? getInput(opts) : undefined);
+
+export const getUrlAsync: AsyncGetUrl = async (opts) => {
+  const input = hasQueryInput(opts) ? await getInputAsync(opts) : undefined;
+  return getUrlWithInput(opts, input);
 };
 
 export const getBody: GetBody = (opts) => {

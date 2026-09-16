@@ -8,7 +8,6 @@ import {
   TRPCError,
 } from '@trpc/server';
 import type {
-  AsyncDataTransformer,
   CombinedDataTransformer,
   DataTransformer,
 } from '@trpc/server/unstable-core-do-not-import';
@@ -68,49 +67,8 @@ test('async transformer is awaited for HTTP single responses and input', async (
   expect(calls.syncDeserialize).toBe(0);
 });
 
-test('async-only transformer can be used by the tRPC router', async () => {
-  const transformer: AsyncDataTransformer = {
-    serializeAsync: async (value) => superjson.serialize(value),
-    deserializeAsync: async (value) => superjson.deserialize(value),
-  };
-  const t = initTRPC.create({ transformer });
-  const router = t.router({
-    values: t.procedure.input(z.date()).query(({ input }) => ({
-      date: input,
-      map: new Map([['key', 'value']]),
-      set: new Set(['value']),
-      bigint: 42n,
-    })),
-    fail: t.procedure.query(() => {
-      throw new TRPCError({ code: 'BAD_REQUEST', message: 'worker failure' });
-    }),
-  });
-
-  await using ctx = testServerAndClientResource(router, {
-    clientLink: 'httpLink',
-  });
-
-  const result = await ctx.client.values.query(
-    new Date('2025-01-01T00:00:00.000Z'),
-  );
-  expect(result.date).toBeInstanceOf(Date);
-  expect(result.map).toEqual(new Map([['key', 'value']]));
-  expect(result.set).toEqual(new Set(['value']));
-  expect(result.bigint).toBe(42n);
-
-  const error = await waitError(
-    ctx.client.fail.query(),
-    TRPCClientError<typeof router>,
-  );
-  expect(error.data?.code).toBe('BAD_REQUEST');
-  expect(error.data?.httpStatus).toBe(400);
-});
-
 test('application responseBodyEncoder preserves async transformer output', async () => {
-  const transformer: AsyncDataTransformer = {
-    serializeAsync: async (value) => superjson.serialize(value),
-    deserializeAsync: async (value) => superjson.deserialize(value),
-  };
+  const { transformer } = createAsyncTransformer();
   const t = initTRPC.create({ transformer });
   const router = t.router({
     echo: t.procedure.input(z.number()).query(({ input }) => ({ input })),

@@ -26,19 +26,6 @@ export interface DataTransformer {
   deserializeAsync?: (object: any) => Promise<any>;
 }
 
-/**
- * A transformer that can only be used through the asynchronous pipeline.
- *
- * @public
- */
-export interface AsyncDataTransformer {
-  serializeAsync: (object: any) => Promise<any>;
-  deserializeAsync: (object: any) => Promise<any>;
-}
-
-/** @public */
-export type DataTransformerLike = DataTransformer | AsyncDataTransformer;
-
 interface InputDataTransformer extends DataTransformer {
   /**
    * This function runs **on the client** before sending the data to the server.
@@ -76,33 +63,20 @@ export interface CombinedDataTransformer {
 }
 
 /**
- * Input/output transformers may independently use the synchronous or
- * asynchronous contract.
- *
- * @public
- */
-export interface CombinedDataTransformerOptions {
-  input: DataTransformerLike;
-  output: DataTransformerLike;
-}
-
-/**
  * @public
  */
 export type CombinedDataTransformerClient = {
-  input:
-    | Pick<DataTransformer, 'serialize' | 'serializeAsync'>
-    | Pick<AsyncDataTransformer, 'serializeAsync'>;
-  output:
-    | Pick<DataTransformer, 'deserialize' | 'deserializeAsync'>
-    | Pick<AsyncDataTransformer, 'deserializeAsync'>;
+  input: Pick<CombinedDataTransformer['input'], 'serialize' | 'serializeAsync'>;
+  output: Pick<
+    CombinedDataTransformer['output'],
+    'deserialize' | 'deserializeAsync'
+  >;
 };
 
 /**
  * @public
  */
-export type DataTransformerOptions =
-  CombinedDataTransformerOptions | DataTransformerLike;
+export type DataTransformerOptions = CombinedDataTransformer | DataTransformer;
 
 /**
  * @internal
@@ -111,37 +85,9 @@ export function getDataTransformer(
   transformer: DataTransformerOptions,
 ): CombinedDataTransformer {
   if ('input' in transformer) {
-    const input = normalizeDataTransformer(transformer.input);
-    const output = normalizeDataTransformer(transformer.output);
-    if (input === transformer.input && output === transformer.output) {
-      return transformer as CombinedDataTransformer;
-    }
-    return { input, output };
-  }
-  const normalized = normalizeDataTransformer(transformer);
-  return { input: normalized, output: normalized };
-}
-
-function normalizeDataTransformer(
-  transformer: DataTransformerLike,
-): DataTransformer {
-  if ('serialize' in transformer && 'deserialize' in transformer) {
     return transformer;
   }
-
-  return {
-    ...transformer,
-    serialize() {
-      throw new Error(
-        'This transformer only supports asynchronous serialization',
-      );
-    },
-    deserialize() {
-      throw new Error(
-        'This transformer only supports asynchronous deserialization',
-      );
-    },
-  };
+  return { input: transformer, output: transformer };
 }
 
 /**
@@ -193,12 +139,15 @@ async function transformTRPCResponseItemAsync<
   config: RootConfig<AnyRootTypes>,
   item: TResponseItem,
 ): Promise<TResponseItem> {
+  const serialize = (value: any) =>
+    config.transformer.output.serializeAsync
+      ? config.transformer.output.serializeAsync(value)
+      : config.transformer.output.serialize(value);
+
   if ('error' in item) {
     return {
       ...item,
-      error: config.transformer.output.serializeAsync
-        ? await config.transformer.output.serializeAsync(item.error)
-        : config.transformer.output.serialize(item.error),
+      error: await serialize(item.error),
     };
   }
 
@@ -207,9 +156,7 @@ async function transformTRPCResponseItemAsync<
       ...item,
       result: {
         ...item.result,
-        data: config.transformer.output.serializeAsync
-          ? await config.transformer.output.serializeAsync(item.result.data)
-          : config.transformer.output.serialize(item.result.data),
+        data: await serialize(item.result.data),
       },
     };
   }
@@ -321,6 +268,11 @@ export async function transformResultAsync<TRouter extends AnyRouter, TOutput>(
     | TRPCResponseMessage<TOutput, inferRouterError<TRouter>>,
   transformer: DataTransformer,
 ): Promise<ReturnType<typeof transformResultInner>> {
+  const deserialize = (value: any) =>
+    transformer.deserializeAsync
+      ? transformer.deserializeAsync(value)
+      : transformer.deserialize(value);
+
   try {
     const result =
       'error' in response
@@ -328,11 +280,9 @@ export async function transformResultAsync<TRouter extends AnyRouter, TOutput>(
             ok: false as const,
             error: {
               ...response,
-              error: (transformer.deserializeAsync
-                ? await transformer.deserializeAsync(response.error)
-                : transformer.deserialize(
-                    response.error,
-                  )) as inferRouterError<TRouter>,
+              error: (await deserialize(
+                response.error,
+              )) as inferRouterError<TRouter>,
             },
           }
         : {
@@ -342,9 +292,7 @@ export async function transformResultAsync<TRouter extends AnyRouter, TOutput>(
               ...((!response.result.type ||
                 response.result.type === 'data') && {
                 type: 'data' as const,
-                data: transformer.deserializeAsync
-                  ? await transformer.deserializeAsync(response.result.data)
-                  : transformer.deserialize(response.result.data),
+                data: await deserialize(response.result.data),
               }),
             } as TRPCResultMessage<TOutput>['result'],
           };

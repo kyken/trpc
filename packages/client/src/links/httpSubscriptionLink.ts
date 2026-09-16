@@ -106,9 +106,7 @@ export function httpSubscriptionLink<
           init: () => resultOf(opts.eventSourceOptions, { op }),
           signal,
           deserialize: (data) => transformer.output.deserialize(data),
-          deserializeAsync: transformer.output.deserializeAsync
-            ? async (data) => await transformer.output.deserializeAsync?.(data)
-            : undefined,
+          deserializeAsync: transformer.output.deserializeAsync,
           EventSource: opts.EventSource ?? (globalThis.EventSource as never),
         });
 

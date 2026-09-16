@@ -136,10 +136,7 @@ export function httpBatchStreamLink<TRouter extends AnyRouter>(
             from: res.body!,
             deserialize: (data) =>
               resolvedOpts.transformer.output.deserialize(data),
-            deserializeAsync: resolvedOpts.transformer.output.deserializeAsync
-              ? async (data) =>
-                  await resolvedOpts.transformer.output.deserializeAsync?.(data)
-              : undefined,
+            deserializeAsync: resolvedOpts.transformer.output.deserializeAsync,
             // onError: console.error,
             formatError(opts) {
               const error = opts.error as TRPCErrorShape;

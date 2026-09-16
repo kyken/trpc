@@ -154,12 +154,22 @@ export const client = createTRPCClient<AppRouter>({
 
 If a transformer should only be used for one direction or different transformers should be used for upload and download (e.g., for performance reasons), you can provide individual transformers for upload and download. Make sure you use the same combined transformer everywhere.
 
+## Asynchronous transformer methods
+
+Existing `DataTransformer` implementations keep the required synchronous `serialize` and `deserialize` methods. The optional async methods are used by transports that support asynchronous transformation. Existing synchronous transformers keep the synchronous fast path.
+
+An async transformer may use any execution strategy, including a worker thread
+or another process. For non-streaming HTTP responses, an application-provided
+`responseBodyEncoder` can also move final body encoding out of the main thread.
+
 ## `DataTransformer` interface
 
 ```ts twoslash
 export interface DataTransformer {
   serialize(object: any): any;
   deserialize(object: any): any;
+  serializeAsync?: (object: any) => Promise<any>;
+  deserializeAsync?: (object: any) => Promise<any>;
 }
 
 interface InputDataTransformer extends DataTransformer {

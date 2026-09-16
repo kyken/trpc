@@ -29,6 +29,7 @@ import { isObservable, observableToAsyncIterable } from '../observable';
 import {
   isAsyncIterable,
   isObject,
+  isPromise,
   isTrackedEnvelope,
   run,
   transformTRPCResponseAsync,
@@ -180,7 +181,7 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           req,
           input: undefined,
         });
-        await respond({
+        const response = respond({
           id: null,
           error: getErrorShape({
             config: router._def._config,
@@ -191,6 +192,9 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
             ctx,
           }),
         });
+        if (isPromise(response)) {
+          await response;
+        }
 
         // close in next tick
         (globalThis.setImmediate ?? globalThis.setTimeout)(() => {
@@ -216,10 +220,7 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
         ? null
         : createCtxPromise(() => null);
 
-    async function handleRequest(
-      msg: TRPCClientOutgoingMessage,
-      batchIndex: number,
-    ) {
+    function handleRequest(msg: TRPCClientOutgoingMessage, batchIndex: number) {
       const { id, jsonrpc } = msg;
 
       if (id === null) {
@@ -237,7 +238,7 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           req,
           input: undefined,
         });
-        await respond({
+        void respond({
           id,
           jsonrpc,
           error: getErrorShape({
@@ -258,8 +259,6 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
       const { path, lastEventId } = msg.params;
       let { input } = msg.params;
       const type = msg.method;
-      const duplicateSubscription =
-        type === 'subscription' && clientSubscriptions.has(id);
 
       if (lastEventId !== undefined) {
         if (isObject(input)) {
@@ -273,10 +272,6 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           };
         }
       }
-      const requestAbortController = new AbortController();
-      if (type === 'subscription' && !duplicateSubscription) {
-        clientSubscriptions.set(id, requestAbortController);
-      }
       run(async () => {
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         const res = await ctxPromise!; // asserts context has been set
@@ -284,22 +279,16 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           throw res.error;
         }
 
+        const abortController = new AbortController();
         const result = await callTRPCProcedure({
           router,
           path,
           getRawInput: async () => input,
           ctx,
           type,
-          signal: requestAbortController.signal,
+          signal: abortController.signal,
           batchIndex,
         });
-
-        if (requestAbortController.signal.aborted) {
-          if (clientSubscriptions.get(id) === requestAbortController) {
-            clientSubscriptions.delete(id);
-          }
-          return;
-        }
 
         const isIterableResult =
           isAsyncIterable(result) || isObservable(result);
@@ -312,7 +301,7 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
             });
           }
           // send the value as data if the method is not a subscription
-          await respond({
+          const response = respond({
             id,
             jsonrpc,
             result: {
@@ -320,6 +309,9 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
               data: result,
             },
           });
+          if (isPromise(response)) {
+            await response;
+          }
           return;
         }
 
@@ -335,14 +327,11 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           // if the client got disconnected whilst initializing the subscription
           // no need to send stopped message if the client is disconnected
 
-          if (clientSubscriptions.get(id) === requestAbortController) {
-            clientSubscriptions.delete(id);
-          }
           return;
         }
 
         /* istanbul ignore next -- @preserve */
-        if (duplicateSubscription) {
+        if (clientSubscriptions.has(id)) {
           // duplicate request ids for client
 
           throw new TRPCError({
@@ -352,22 +341,27 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
         }
 
         const iterable = isObservable(result)
-          ? observableToAsyncIterable(result, requestAbortController.signal)
+          ? observableToAsyncIterable(result, abortController.signal)
           : result;
 
-        await respond({
+        clientSubscriptions.set(id, abortController);
+
+        const startedResponse = respond({
           id,
           jsonrpc,
           result: {
             type: 'started',
           },
         });
+        if (isPromise(startedResponse)) {
+          await startedResponse;
+        }
 
         run(async () => {
           await using iterator = iteratorResource(iterable);
 
           const abortPromise = new Promise<'abort'>((resolve) => {
-            requestAbortController.signal.onabort = () => resolve('abort');
+            abortController.signal.onabort = () => resolve('abort');
           });
           // We need those declarations outside the loop for garbage collection reasons. If they
           // were declared inside, they would not be freed until the next value is present.
@@ -392,7 +386,7 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
             if (next instanceof Error) {
               const error = getTRPCErrorFromUnknown(next);
               opts.onError?.({ error, path, type, ctx, req, input });
-              await respond({
+              const errorResponse = respond({
                 id,
                 jsonrpc,
                 error: getErrorShape({
@@ -404,6 +398,9 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
                   ctx,
                 }),
               });
+              if (isPromise(errorResponse)) {
+                await errorResponse;
+              }
               break;
             }
             if (next.done) {
@@ -424,34 +421,36 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
               };
             }
 
-            await respond({
+            const dataResponse = respond({
               id,
               jsonrpc,
               result,
             });
+            if (isPromise(dataResponse)) {
+              await dataResponse;
+            }
 
             // free up references for garbage collection
             next = null;
             result = null;
           }
 
-          await respond({
+          const stoppedResponse = respond({
             id,
             jsonrpc,
             result: {
               type: 'stopped',
             },
           });
-          if (clientSubscriptions.get(id) === requestAbortController) {
-            clientSubscriptions.delete(id);
+          if (isPromise(stoppedResponse)) {
+            await stoppedResponse;
           }
+          clientSubscriptions.delete(id);
         }).catch(async (cause) => {
-          if (clientSubscriptions.get(id) === requestAbortController) {
-            clientSubscriptions.delete(id);
-          }
+          clientSubscriptions.delete(id);
           const error = getTRPCErrorFromUnknown(cause);
           opts.onError?.({ error, path, type, ctx, req, input });
-          await respond({
+          const errorResponse = respond({
             id,
             jsonrpc,
             error: getErrorShape({
@@ -463,16 +462,16 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
               ctx,
             }),
           });
-          requestAbortController.abort();
+          if (isPromise(errorResponse)) {
+            await errorResponse;
+          }
+          abortController.abort();
         });
       }).catch(async (cause) => {
         // procedure threw an error
-        if (clientSubscriptions.get(id) === requestAbortController) {
-          clientSubscriptions.delete(id);
-        }
         const error = getTRPCErrorFromUnknown(cause);
         opts.onError?.({ error, path, type, ctx, req, input });
-        await respond({
+        const errorResponse = respond({
           id,
           jsonrpc,
           error: getErrorShape({
@@ -484,7 +483,9 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
             ctx,
           }),
         });
-        requestAbortController.abort();
+        if (isPromise(errorResponse)) {
+          await errorResponse;
+        }
       });
     }
     client.on('message', (rawData, isBinary) => {
@@ -578,11 +579,9 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           const msgJSON: unknown = encoder.decode(data);
           const msgs: unknown[] = Array.isArray(msgJSON) ? msgJSON : [msgJSON];
 
-          return transformer.input.deserializeAsync
-            ? await Promise.all(
-                msgs.map((raw) => parseTRPCMessageAsync(raw, transformer)),
-              )
-            : msgs.map((raw) => parseTRPCMessage(raw, transformer));
+          return await Promise.all(
+            msgs.map((raw) => parseTRPCMessageAsync(raw, transformer)),
+          );
         } catch (cause) {
           await handleParseError(cause);
           return [] as TRPCClientOutgoingMessage[];
