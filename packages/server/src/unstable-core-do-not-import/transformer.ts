@@ -26,6 +26,19 @@ export interface DataTransformer {
   deserializeAsync?: (object: any) => Promise<any>;
 }
 
+/**
+ * A transformer that can only be used through the asynchronous pipeline.
+ *
+ * @public
+ */
+export interface AsyncDataTransformer {
+  serializeAsync: (object: any) => Promise<any>;
+  deserializeAsync: (object: any) => Promise<any>;
+}
+
+/** @public */
+export type DataTransformerLike = DataTransformer | AsyncDataTransformer;
+
 interface InputDataTransformer extends DataTransformer {
   /**
    * This function runs **on the client** before sending the data to the server.
@@ -63,20 +76,33 @@ export interface CombinedDataTransformer {
 }
 
 /**
+ * Input/output transformers may independently use the synchronous or
+ * asynchronous contract.
+ *
+ * @public
+ */
+export interface CombinedDataTransformerOptions {
+  input: DataTransformerLike;
+  output: DataTransformerLike;
+}
+
+/**
  * @public
  */
 export type CombinedDataTransformerClient = {
-  input: Pick<CombinedDataTransformer['input'], 'serialize' | 'serializeAsync'>;
-  output: Pick<
-    CombinedDataTransformer['output'],
-    'deserialize' | 'deserializeAsync'
-  >;
+  input:
+    | Pick<DataTransformer, 'serialize' | 'serializeAsync'>
+    | Pick<AsyncDataTransformer, 'serializeAsync'>;
+  output:
+    | Pick<DataTransformer, 'deserialize' | 'deserializeAsync'>
+    | Pick<AsyncDataTransformer, 'deserializeAsync'>;
 };
 
 /**
  * @public
  */
-export type DataTransformerOptions = CombinedDataTransformer | DataTransformer;
+export type DataTransformerOptions =
+  CombinedDataTransformerOptions | DataTransformerLike;
 
 /**
  * @internal
@@ -85,9 +111,37 @@ export function getDataTransformer(
   transformer: DataTransformerOptions,
 ): CombinedDataTransformer {
   if ('input' in transformer) {
+    const input = normalizeDataTransformer(transformer.input);
+    const output = normalizeDataTransformer(transformer.output);
+    if (input === transformer.input && output === transformer.output) {
+      return transformer as CombinedDataTransformer;
+    }
+    return { input, output };
+  }
+  const normalized = normalizeDataTransformer(transformer);
+  return { input: normalized, output: normalized };
+}
+
+function normalizeDataTransformer(
+  transformer: DataTransformerLike,
+): DataTransformer {
+  if ('serialize' in transformer && 'deserialize' in transformer) {
     return transformer;
   }
-  return { input: transformer, output: transformer };
+
+  return {
+    ...transformer,
+    serialize() {
+      throw new Error(
+        'This transformer only supports asynchronous serialization',
+      );
+    },
+    deserialize() {
+      throw new Error(
+        'This transformer only supports asynchronous deserialization',
+      );
+    },
+  };
 }
 
 /**

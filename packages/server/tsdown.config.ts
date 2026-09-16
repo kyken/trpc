@@ -1,5 +1,3 @@
-import { copyFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { defineConfig } from 'tsdown';
 
 export const input = [
@@ -10,7 +8,6 @@ export const input = [
   'src/adapters/next-app-dir.ts',
   'src/adapters/next.ts',
   'src/adapters/node-http/index.ts',
-  'src/adapters/node-worker/index.ts',
   'src/adapters/standalone.ts',
   'src/adapters/ws.ts',
   'src/http.ts',
@@ -49,10 +46,6 @@ export default defineConfig({
     const { generateEntrypoints } =
       await import('../../scripts/entrypoints.js');
     await generateEntrypoints(input);
-    copyFileSync(
-      resolve('src/adapters/node-worker/worker.mjs'),
-      resolve('dist/adapters/node-worker/worker.mjs'),
-    );
     // eslint-disable-next-line no-console
     console.log(`Generated entrypoints in ${Date.now() - start}ms`);
   },

@@ -104,16 +104,6 @@
         "default": "./dist/adapters/node-http/index.cjs"
       }
     },
-    "./adapters/node-worker": {
-      "import": {
-        "types": "./dist/adapters/node-worker/index.d.mts",
-        "default": "./dist/adapters/node-worker/index.mjs"
-      },
-      "require": {
-        "types": "./dist/adapters/node-worker/index.d.cts",
-        "default": "./dist/adapters/node-worker/index.cjs"
-      }
-    },
     "./adapters/standalone": {
       "import": {
         "types": "./dist/adapters/standalone.d.mts",

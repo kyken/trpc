@@ -1,5 +1,3 @@
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { testServerAndClientResource } from '@trpc/client/__tests__/testClientResource';
 import { waitError } from '@trpc/server/__tests__/waitError';
 import { TRPCClientError } from '@trpc/client';
@@ -9,8 +7,8 @@ import {
   transformTRPCResponseAsync,
   TRPCError,
 } from '@trpc/server';
-import { createNodeWorkerTransformer } from '@trpc/server/adapters/node-worker';
 import type {
+  AsyncDataTransformer,
   CombinedDataTransformer,
   DataTransformer,
 } from '@trpc/server/unstable-core-do-not-import';
@@ -70,23 +68,11 @@ test('async transformer is awaited for HTTP single responses and input', async (
   expect(calls.syncDeserialize).toBe(0);
 });
 
-test('Node worker transformer encodes the complete HTTP response body', async () => {
-  const transformer = createNodeWorkerTransformer({
-    workerModule: pathToFileURL(
-      resolve(
-        process.cwd(),
-        'packages/tests/server/fixtures/async-transformer-worker.mjs',
-      ),
-    ),
-    workerEntry: pathToFileURL(
-      resolve(
-        process.cwd(),
-        'packages/server/src/adapters/node-worker/worker.mjs',
-      ),
-    ),
-    transformer: superjson,
-    maxWorkers: 2,
-  });
+test('async-only transformer can be used by the tRPC router', async () => {
+  const transformer: AsyncDataTransformer = {
+    serializeAsync: async (value) => superjson.serialize(value),
+    deserializeAsync: async (value) => superjson.deserialize(value),
+  };
   const t = initTRPC.create({ transformer });
   const router = t.router({
     values: t.procedure.input(z.date()).query(({ input }) => ({
@@ -100,69 +86,46 @@ test('Node worker transformer encodes the complete HTTP response body', async ()
     }),
   });
 
-  try {
-    await using ctx = testServerAndClientResource(router, {
-      clientLink: 'httpLink',
-      server: {
-        responseBodyEncoder: transformer.responseBodyEncoder,
-      },
-    });
+  await using ctx = testServerAndClientResource(router, {
+    clientLink: 'httpLink',
+  });
 
-    const result = await ctx.client.values.query(
-      new Date('2025-01-01T00:00:00.000Z'),
-    );
-    expect(result.date).toBeInstanceOf(Date);
-    expect(result.map).toEqual(new Map([['key', 'value']]));
-    expect(result.set).toEqual(new Set(['value']));
-    expect(result.bigint).toBe(42n);
+  const result = await ctx.client.values.query(
+    new Date('2025-01-01T00:00:00.000Z'),
+  );
+  expect(result.date).toBeInstanceOf(Date);
+  expect(result.map).toEqual(new Map([['key', 'value']]));
+  expect(result.set).toEqual(new Set(['value']));
+  expect(result.bigint).toBe(42n);
 
-    const error = await waitError(
-      ctx.client.fail.query(),
-      TRPCClientError<typeof router>,
-    );
-    expect(error.data?.code).toBe('BAD_REQUEST');
-    expect(error.data?.httpStatus).toBe(400);
-  } finally {
-    await transformer.close();
-  }
+  const error = await waitError(
+    ctx.client.fail.query(),
+    TRPCClientError<typeof router>,
+  );
+  expect(error.data?.code).toBe('BAD_REQUEST');
+  expect(error.data?.httpStatus).toBe(400);
 });
 
-test('Node worker response encoder preserves HTTP batch envelopes', async () => {
-  const transformer = createNodeWorkerTransformer({
-    workerModule: pathToFileURL(
-      resolve(
-        process.cwd(),
-        'packages/tests/server/fixtures/async-transformer-worker.mjs',
-      ),
-    ),
-    workerEntry: pathToFileURL(
-      resolve(
-        process.cwd(),
-        'packages/server/src/adapters/node-worker/worker.mjs',
-      ),
-    ),
-    transformer: superjson,
-    maxWorkers: 2,
-  });
+test('application responseBodyEncoder preserves async transformer output', async () => {
+  const transformer: AsyncDataTransformer = {
+    serializeAsync: async (value) => superjson.serialize(value),
+    deserializeAsync: async (value) => superjson.deserialize(value),
+  };
   const t = initTRPC.create({ transformer });
   const router = t.router({
-    echo: t.procedure.input(z.number()).query(({ input }) => input),
+    echo: t.procedure.input(z.number()).query(({ input }) => ({ input })),
+  });
+  const responseBodyEncoder = async (response: any) =>
+    JSON.stringify(await transformTRPCResponseAsync(t._config, response));
+
+  await using ctx = testServerAndClientResource(router, {
+    clientLink: 'httpBatchLink',
+    server: { responseBodyEncoder },
   });
 
-  try {
-    await using ctx = testServerAndClientResource(router, {
-      clientLink: 'httpBatchLink',
-      server: {
-        responseBodyEncoder: transformer.responseBodyEncoder,
-      },
-    });
-
-    await expect(
-      Promise.all([ctx.client.echo.query(1), ctx.client.echo.query(2)]),
-    ).resolves.toEqual([1, 2]);
-  } finally {
-    await transformer.close();
-  }
+  await expect(
+    Promise.all([ctx.client.echo.query(1), ctx.client.echo.query(2)]),
+  ).resolves.toEqual([{ input: 1 }, { input: 2 }]);
 });
 
 test('empty superjson up and down', async () => {

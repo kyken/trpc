@@ -1,5 +1,6 @@
 import { initTRPC } from './initTRPC';
 import type {
+  AsyncDataTransformer,
   CombinedDataTransformer,
   DataTransformerOptions,
 } from './transformer';
@@ -27,6 +28,17 @@ test('custom transformer', () => {
   const t = initTRPC.create({
     transformer,
   });
+
+  expectTypeOf<typeof t._config.$types.transformer>().toEqualTypeOf<true>();
+  expectTypeOf(t._config.transformer).toEqualTypeOf<CombinedDataTransformer>();
+});
+
+test('async-only transformer', () => {
+  const transformer: AsyncDataTransformer = {
+    serializeAsync: async (v) => v,
+    deserializeAsync: async (v) => v,
+  };
+  const t = initTRPC.create({ transformer });
 
   expectTypeOf<typeof t._config.$types.transformer>().toEqualTypeOf<true>();
   expectTypeOf(t._config.transformer).toEqualTypeOf<CombinedDataTransformer>();
