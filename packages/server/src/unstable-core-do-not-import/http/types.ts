@@ -22,16 +22,6 @@ export interface ResponseMeta {
   headers?: Headers | HTTPHeaders;
 }
 
-/** @public */
-export type ResponseBody = string | Uint8Array;
-
-/** @public */
-export type ResponseBodyEncoder<TRouter extends AnyRouter> = (
-  response:
-    | TRPCResponse<unknown, inferRouterError<TRouter>>
-    | TRPCResponse<unknown, inferRouterError<TRouter>>[],
-) => Promise<ResponseBody>;
-
 /**
  * @internal
  */
@@ -65,12 +55,6 @@ export interface HTTPBaseHandlerOptions<
    * @see https://trpc.io/docs/v11/caching
    */
   responseMeta?: ResponseMetaFn<TRouter>;
-  /**
-   * Encode a non-streaming response body asynchronously.
-   * The encoder receives the untransformed tRPC response envelope and is
-   * responsible for applying the output transformer and final body encoding.
-   */
-  responseBodyEncoder?: ResponseBodyEncoder<TRouter>;
 }
 
 export type TRPCAcceptHeader = 'application/jsonl';

@@ -111,18 +111,18 @@ export type HTTPBaseRequestOptions = GetInputOptions &
   };
 
 type GetUrl = (opts: HTTPBaseRequestOptions) => string;
-type AsyncGetUrl = (opts: HTTPBaseRequestOptions) => string | Promise<string>;
+type AsyncGetUrl = (opts: HTTPBaseRequestOptions) => Promise<string>;
 type GetBody = (opts: HTTPBaseRequestOptions) => RequestInitEsque['body'];
 type AsyncGetBody = (
   opts: HTTPBaseRequestOptions,
-) => RequestInitEsque['body'] | Promise<RequestInitEsque['body']>;
+) => Promise<RequestInitEsque['body']>;
 
 export type ContentOptions = {
   trpcAcceptHeader?: TRPCAcceptHeader;
   trpcAcceptHeaderKey?: 'trpc-accept' | 'accept';
   contentTypeHeader?: string;
-  getUrl: AsyncGetUrl;
-  getBody: AsyncGetBody;
+  getUrl: GetUrl | AsyncGetUrl;
+  getBody: GetBody | AsyncGetBody;
 };
 
 function getUrlWithInput(opts: HTTPBaseRequestOptions, input: unknown) {

@@ -57,15 +57,21 @@ export function httpBatchStreamLink<TRouter extends AnyRouter>(
           const path = batchOps.map((op) => op.path).join(',');
           const inputs = batchOps.map((op) => op.input);
 
-          const url = getUrl({
+          const requestOpts = {
             ...resolvedOpts,
             type,
             path,
             inputs,
             signal: null,
-          });
+          };
 
-          return url.length <= maxURLLength;
+          if (resolvedOpts.transformer.input.serializeAsync) {
+            return getUrlAsync(requestOpts).then(
+              (url) => url.length <= maxURLLength,
+            );
+          }
+
+          return getUrl(requestOpts).length <= maxURLLength;
         },
         async fetch(batchOps) {
           const path = batchOps.map((op) => op.path).join(',');

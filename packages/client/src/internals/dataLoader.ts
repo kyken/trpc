@@ -11,7 +11,7 @@ type Batch<TKey, TValue> = {
   items: BatchItem<TKey, TValue>[];
 };
 export type BatchLoader<TKey, TValue> = {
-  validate: (keys: TKey[]) => boolean;
+  validate: (keys: TKey[]) => boolean | Promise<boolean>;
   fetch: (keys: TKey[]) => Promise<TValue[] | Promise<TValue>[]>;
 };
 
@@ -44,7 +44,7 @@ export function dataLoader<TKey, TValue>(
   /**
    * Iterate through the items and split them into groups based on the `batchLoader`'s validate function
    */
-  function groupItems(items: BatchItem<TKey, TValue>[]) {
+  async function groupItems(items: BatchItem<TKey, TValue>[]) {
     const groupedItems: BatchItem<TKey, TValue>[][] = [[]];
     let index = 0;
     while (true) {
@@ -62,7 +62,7 @@ export function dataLoader<TKey, TValue>(
         continue;
       }
 
-      const isValid = batchLoader.validate(
+      const isValid = await batchLoader.validate(
         lastGroup.concat(item).map((it) => it.key),
       );
 
@@ -83,9 +83,22 @@ export function dataLoader<TKey, TValue>(
     return groupedItems;
   }
 
-  function dispatch() {
-    const groupedItems = groupItems(pendingItems!);
+  async function dispatch() {
+    const items = pendingItems!;
     destroyTimerAndPendingItems();
+
+    let groupedItems: BatchItem<TKey, TValue>[][];
+    try {
+      groupedItems = await groupItems(items);
+    } catch (cause) {
+      for (const item of items) {
+        item.reject?.(cause as Error);
+        item.batch = null;
+        item.reject = null;
+        item.resolve = null;
+      }
+      return;
+    }
 
     // Create batches for each group of items
     for (const items of groupedItems) {
@@ -149,7 +162,7 @@ export function dataLoader<TKey, TValue>(
       pendingItems.push(item);
     });
 
-    dispatchTimer ??= setTimeout(dispatch);
+    dispatchTimer ??= setTimeout(() => void dispatch());
 
     return promise;
   }

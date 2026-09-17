@@ -14,8 +14,6 @@ export type {
   ResolveHTTPRequestOptionsContextFn,
   ResponseMeta,
   ResponseMetaFn,
-  ResponseBody,
-  ResponseBodyEncoder,
   TRPCRequestInfo,
   OctetInput,
   FileLike,

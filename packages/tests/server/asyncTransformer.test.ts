@@ -1,6 +1,10 @@
 import { testServerAndClientResource } from '@trpc/client/__tests__/testClientResource';
 import { waitError } from '@trpc/server/__tests__/waitError';
-import { TRPCClientError } from '@trpc/client';
+import {
+  httpBatchLink,
+  httpBatchStreamLink,
+  TRPCClientError,
+} from '@trpc/client';
 import {
   initTRPC,
   transformTRPCResponse,
@@ -67,24 +71,43 @@ test('async transformer is awaited for HTTP single responses and input', async (
   expect(calls.syncDeserialize).toBe(0);
 });
 
-test('application responseBodyEncoder preserves async transformer output', async () => {
-  const { transformer } = createAsyncTransformer();
-  const t = initTRPC.create({ transformer });
-  const router = t.router({
-    echo: t.procedure.input(z.number()).query(({ input }) => ({ input })),
-  });
-  const responseBodyEncoder = async (response: any) =>
-    JSON.stringify(await transformTRPCResponseAsync(t._config, response));
+test.each(['httpBatchLink', 'httpBatchStreamLink'] as const)(
+  '%s uses async input serialization while validating batch size',
+  async (clientLink) => {
+    const transformer: DataTransformer = {
+      serialize: () => {
+        throw new Error('sync serialization should not be called');
+      },
+      deserialize: superjson.deserialize,
+      serializeAsync: async (value) => superjson.serialize(value),
+      deserializeAsync: async (value) => superjson.deserialize(value),
+    };
+    const t = initTRPC.create({ transformer });
+    const router = t.router({
+      echo: t.procedure.input(z.string()).query(({ input }) => input),
+    });
 
-  await using ctx = testServerAndClientResource(router, {
-    clientLink: 'httpBatchLink',
-    server: { responseBodyEncoder },
-  });
+    await using ctx = testServerAndClientResource(router, {
+      client({ httpUrl }) {
+        const link =
+          clientLink === 'httpBatchLink'
+            ? httpBatchLink({
+                url: httpUrl,
+                transformer,
+                maxURLLength: 10_000,
+              })
+            : httpBatchStreamLink({
+                url: httpUrl,
+                transformer,
+                maxURLLength: 10_000,
+              });
+        return { links: [link] };
+      },
+    });
 
-  await expect(
-    Promise.all([ctx.client.echo.query(1), ctx.client.echo.query(2)]),
-  ).resolves.toEqual([{ input: 1 }, { input: 2 }]);
-});
+    await expect(ctx.client.echo.query('hello')).resolves.toBe('hello');
+  },
+);
 
 test('empty superjson up and down', async () => {
   const { transformer } = createAsyncTransformer();
