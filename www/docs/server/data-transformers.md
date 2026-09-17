@@ -158,8 +158,9 @@ If a transformer should only be used for one direction or different transformers
 
 Existing `DataTransformer` implementations keep the required synchronous `serialize` and `deserialize` methods. The optional async methods are used by transports that support asynchronous transformation. Existing synchronous transformers keep the synchronous fast path.
 
-An async transformer may use any execution strategy, including a worker thread
-or another process.
+An async transformer may use any execution strategy. tRPC does not create or
+manage workers; applications can provide an async implementation backed by
+their own worker or another process if needed.
 
 ## `DataTransformer` interface
 

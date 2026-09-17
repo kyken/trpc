@@ -107,6 +107,7 @@ export type {
    * @deprecated use `TRPCDataTransformer` instead
    */
   DataTransformer,
+
   /**
    * @deprecated This is a utility type will be removed in v12
    */
