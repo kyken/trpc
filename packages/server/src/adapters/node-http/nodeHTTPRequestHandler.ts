@@ -13,6 +13,7 @@
 import {
   getTRPCErrorFromUnknown,
   transformTRPCResponse,
+  transformTRPCResponseAsync,
   type AnyRouter,
 } from '../../@trpc/server';
 import type { ResolveHTTPRequestOptionsContextFn } from '../../@trpc/server/http';
@@ -35,7 +36,7 @@ export function internal_exceptionHandler<
   TRequest extends NodeHTTPRequest,
   TResponse extends NodeHTTPResponse,
 >(opts: NodeHTTPRequestHandlerOptions<TRouter, TRequest, TResponse>) {
-  return (cause: unknown) => {
+  return async (cause: unknown) => {
     const { res, req } = opts;
     const error = getTRPCErrorFromUnknown(cause);
 
@@ -57,12 +58,17 @@ export function internal_exceptionHandler<
       ctx: undefined,
     });
 
-    const transformed = transformTRPCResponse(opts.router._def._config, {
-      error: shape,
-    });
+    const response = { error: shape };
+    const body = opts.router._def._config.transformer.output.serializeAsync
+      ? JSON.stringify(
+          await transformTRPCResponseAsync(opts.router._def._config, response),
+        )
+      : JSON.stringify(
+          transformTRPCResponse(opts.router._def._config, response),
+        );
 
     res.statusCode = shape.data.httpStatus;
-    res.end(JSON.stringify(transformed));
+    res.end(body);
   };
 }
 

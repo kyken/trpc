@@ -23,4 +23,4 @@ export type {
   TRPCSuccessResponse,
   TRPCConnectionParamsMessage,
 } from './envelopes';
-export { parseTRPCMessage } from './parseTRPCMessage';
+export { parseTRPCMessage, parseTRPCMessageAsync } from './parseTRPCMessage';

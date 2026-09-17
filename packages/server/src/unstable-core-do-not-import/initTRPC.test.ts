@@ -32,6 +32,24 @@ test('custom transformer', () => {
   expectTypeOf(t._config.transformer).toEqualTypeOf<CombinedDataTransformer>();
 });
 
+test('async transformer methods are optional extensions to sync methods', () => {
+  const transformer: DataTransformerOptions = {
+    deserialize: (v) => v,
+    serialize: (v) => v,
+    deserializeAsync: async (v) => v,
+    serializeAsync: async (v) => v,
+  };
+
+  expectTypeOf(transformer).toMatchTypeOf<DataTransformerOptions>();
+
+  // @ts-expect-error synchronous methods are required
+  const asyncOnlyTransformer: DataTransformerOptions = {
+    deserializeAsync: async (v) => v,
+    serializeAsync: async (v) => v,
+  };
+  expect(asyncOnlyTransformer).toBeDefined();
+});
+
 test('meta typings', () => {
   type Meta = { __META__: true };
   const meta: Meta = { __META__: true };

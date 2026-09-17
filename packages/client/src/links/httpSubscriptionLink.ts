@@ -16,7 +16,7 @@ import { raceAbortSignals } from '../internals/signals';
 import { TRPCClientError } from '../TRPCClientError';
 import type { TRPCConnectionState } from '../unstable-internals';
 import { getTransformer, type TransformerOptions } from '../unstable-internals';
-import { getUrl } from './internals/httpUtils';
+import { getUrl, getUrlAsync } from './internals/httpUtils';
 import {
   resultOf,
   type UrlOptionsWithConnectionParams,
@@ -95,7 +95,7 @@ export function httpSubscriptionLink<
           error: TRPCErrorShape;
         }>({
           url: async () =>
-            getUrl({
+            (transformer.input.serializeAsync ? getUrlAsync : getUrl)({
               transformer,
               url: await urlWithConnectionParams(opts),
               input: inputWithTrackedEventId(input, lastEventId),
@@ -106,6 +106,7 @@ export function httpSubscriptionLink<
           init: () => resultOf(opts.eventSourceOptions, { op }),
           signal,
           deserialize: (data) => transformer.output.deserialize(data),
+          deserializeAsync: transformer.output.deserializeAsync,
           EventSource: opts.EventSource ?? (globalThis.EventSource as never),
         });
 

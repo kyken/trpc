@@ -9,6 +9,7 @@ export {
   // --- FIXME a bunch of these exports are only useful for plugins - move them somewhere else? ----
   getTRPCErrorFromUnknown,
   transformTRPCResponse,
+  transformTRPCResponseAsync,
   createFlatProxy as createTRPCFlatProxy,
   createRecursiveProxy as createTRPCRecursiveProxy,
   type inferProcedureInput,

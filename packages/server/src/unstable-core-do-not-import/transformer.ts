@@ -13,6 +13,17 @@ import { isObject } from './utils';
 export interface DataTransformer {
   serialize(object: any): any;
   deserialize(object: any): any;
+  /**
+   * Optional asynchronous equivalent of `serialize`.
+   *
+   * The synchronous methods remain the default so existing transformers keep
+   * using the synchronous fast path.
+   */
+  serializeAsync?: (object: any) => Promise<any>;
+  /**
+   * Optional asynchronous equivalent of `deserialize`.
+   */
+  deserializeAsync?: (object: any) => Promise<any>;
 }
 
 interface InputDataTransformer extends DataTransformer {
@@ -55,8 +66,11 @@ export interface CombinedDataTransformer {
  * @public
  */
 export type CombinedDataTransformerClient = {
-  input: Pick<CombinedDataTransformer['input'], 'serialize'>;
-  output: Pick<CombinedDataTransformer['output'], 'deserialize'>;
+  input: Pick<CombinedDataTransformer['input'], 'serialize' | 'serializeAsync'>;
+  output: Pick<
+    CombinedDataTransformer['output'],
+    'deserialize' | 'deserializeAsync'
+  >;
 };
 
 /**
@@ -117,6 +131,61 @@ export function transformTRPCResponse<
   return Array.isArray(itemOrItems)
     ? itemOrItems.map((item) => transformTRPCResponseItem(config, item))
     : transformTRPCResponseItem(config, itemOrItems);
+}
+
+async function transformTRPCResponseItemAsync<
+  TResponseItem extends TRPCResponse | TRPCResponseMessage,
+>(
+  config: RootConfig<AnyRootTypes>,
+  item: TResponseItem,
+): Promise<TResponseItem> {
+  const serialize = (value: any) =>
+    config.transformer.output.serializeAsync
+      ? config.transformer.output.serializeAsync(value)
+      : config.transformer.output.serialize(value);
+
+  if ('error' in item) {
+    return {
+      ...item,
+      error: await serialize(item.error),
+    };
+  }
+
+  if ('data' in item.result) {
+    return {
+      ...item,
+      result: {
+        ...item.result,
+        data: await serialize(item.result.data),
+      },
+    };
+  }
+
+  return item;
+}
+
+/**
+ * Async counterpart to {@link transformTRPCResponse}.
+ *
+ * This function is intentionally separate from the synchronous helper so the
+ * existing path does not create promises for synchronous transformers.
+ */
+export async function transformTRPCResponseAsync<
+  TResponse extends
+    TRPCResponse | TRPCResponse[] | TRPCResponseMessage | TRPCResponseMessage[],
+>(
+  config: RootConfig<AnyRootTypes>,
+  itemOrItems: TResponse,
+): Promise<TResponse> {
+  if (Array.isArray(itemOrItems)) {
+    return (await Promise.all(
+      itemOrItems.map((item) => transformTRPCResponseItemAsync(config, item)),
+    )) as TResponse;
+  }
+  return (await transformTRPCResponseItemAsync(
+    config,
+    itemOrItems,
+  )) as TResponse;
 }
 
 // FIXME:
@@ -188,4 +257,58 @@ export function transformResult<TRouter extends AnyRouter, TOutput>(
     throw new TransformResultError();
   }
   return result;
+}
+
+/**
+ * Async counterpart to {@link transformResult}.
+ */
+export async function transformResultAsync<TRouter extends AnyRouter, TOutput>(
+  response:
+    | TRPCResponse<TOutput, inferRouterError<TRouter>>
+    | TRPCResponseMessage<TOutput, inferRouterError<TRouter>>,
+  transformer: DataTransformer,
+): Promise<ReturnType<typeof transformResultInner>> {
+  const deserialize = (value: any) =>
+    transformer.deserializeAsync
+      ? transformer.deserializeAsync(value)
+      : transformer.deserialize(value);
+
+  try {
+    const result =
+      'error' in response
+        ? {
+            ok: false as const,
+            error: {
+              ...response,
+              error: (await deserialize(
+                response.error,
+              )) as inferRouterError<TRouter>,
+            },
+          }
+        : {
+            ok: true as const,
+            result: {
+              ...response.result,
+              ...((!response.result.type ||
+                response.result.type === 'data') && {
+                type: 'data' as const,
+                data: await deserialize(response.result.data),
+              }),
+            } as TRPCResultMessage<TOutput>['result'],
+          };
+
+    if (
+      !result.ok &&
+      (!isObject(result.error.error) ||
+        typeof result.error.error.code !== 'number')
+    ) {
+      throw new TransformResultError();
+    }
+    if (result.ok && !isObject(result.result)) {
+      throw new TransformResultError();
+    }
+    return result;
+  } catch {
+    throw new TransformResultError();
+  }
 }

@@ -128,3 +128,19 @@ describe('validation', () => {
     );
   });
 });
+
+test('supports asynchronous validation', async () => {
+  const validate = vi.fn(async (keys: number[]) => keys.length <= 1);
+  const fetchFn = vi.fn((keys: number[]) =>
+    Promise.resolve(keys.map((key) => key + 1)),
+  );
+  const loader = dataLoader<number, number>({
+    validate,
+    fetch: fetchFn,
+  });
+
+  await expect(loader.load(1)).resolves.toBe(2);
+  await expect(loader.load(2)).resolves.toBe(3);
+  expect(validate).toHaveBeenCalled();
+  expect(fetchFn).toHaveBeenCalledTimes(2);
+});

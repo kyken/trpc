@@ -17,6 +17,8 @@ import { PING_SYM, withPing } from './utils/withPing';
 
 type Serialize = (value: any) => any;
 type Deserialize = (value: any) => any;
+type SerializeAsync = (value: any) => Promise<any>;
+type DeserializeAsync = (value: any) => Promise<any>;
 
 /**
  * @internal
@@ -44,6 +46,7 @@ export interface SSEClientOptions {
 
 export interface SSEStreamProducerOptions<TValue = unknown> {
   serialize?: Serialize;
+  serializeAsync?: SerializeAsync;
   data: AsyncIterable<TValue>;
 
   maxDepth?: number;
@@ -85,7 +88,7 @@ interface SSEvent {
 export function sseStreamProducer<TValue = unknown>(
   opts: SSEStreamProducerOptions<TValue>,
 ) {
-  const { serialize = identity } = opts;
+  const { serialize = identity, serializeAsync } = opts;
 
   const ping: Required<SSEPingOptions> = {
     enabled: opts.ping?.enabled ?? false,
@@ -139,7 +142,9 @@ export function sseStreamProducer<TValue = unknown>(
         ? { id: value[0], data: value[1] }
         : { data: value };
 
-      chunk.data = JSON.stringify(serialize(chunk.data));
+      chunk.data = serializeAsync
+        ? JSON.stringify(await serializeAsync(chunk.data))
+        : JSON.stringify(serialize(chunk.data));
 
       yield chunk;
 
@@ -168,7 +173,9 @@ export function sseStreamProducer<TValue = unknown>(
       const data = opts.formatError?.({ error }) ?? null;
       yield {
         event: SERIALIZED_ERROR_EVENT,
-        data: JSON.stringify(serialize(data)),
+        data: serializeAsync
+          ? JSON.stringify(await serializeAsync(data))
+          : JSON.stringify(serialize(data)),
       };
     }
   }
@@ -256,6 +263,7 @@ export interface SSEStreamConsumerOptions<TConfig extends ConsumerConfig> {
     | undefined;
   signal: AbortSignal;
   deserialize?: Deserialize;
+  deserializeAsync?: DeserializeAsync;
   EventSource: TConfig['EventSource'];
 }
 
@@ -285,7 +293,7 @@ async function withTimeout<T>(opts: {
 export function sseStreamConsumer<TConfig extends ConsumerConfig>(
   opts: SSEStreamConsumerOptions<TConfig>,
 ): AsyncIterable<ConsumerStreamResult<TConfig>> {
-  const { deserialize = (v) => v } = opts;
+  const { deserialize = (v) => v, deserializeAsync } = opts;
 
   let clientOptions: SSEClientOptions = emptyObject();
 
@@ -296,6 +304,21 @@ export function sseStreamConsumer<TConfig extends ConsumerConfig>(
   const createStream = () =>
     new ReadableStream<ConsumerStreamResult<TConfig>>({
       async start(controller) {
+        let deserializeQueue = Promise.resolve();
+        const enqueueDeserialized = <TValue>(
+          data: unknown,
+          enqueue: (value: TValue) => void,
+        ) => {
+          if (!deserializeAsync) {
+            enqueue(deserialize(data) as TValue);
+            return;
+          }
+          deserializeQueue = deserializeQueue.then(async () => {
+            enqueue((await deserializeAsync(data)) as TValue);
+          });
+          void deserializeQueue.catch((cause) => controller.error(cause));
+        };
+
         const [url, init] = await Promise.all([opts.url(), opts.init()]);
         const eventSource = (_es = new opts.EventSource(
           url,
@@ -324,11 +347,13 @@ export function sseStreamConsumer<TConfig extends ConsumerConfig>(
         eventSource.addEventListener(SERIALIZED_ERROR_EVENT, (_msg) => {
           const msg = _msg as EventSourceLike.MessageEvent;
 
-          controller.enqueue({
-            type: 'serialized-error',
-            error: deserialize(JSON.parse(msg.data)),
-            eventSource,
-          });
+          enqueueDeserialized(JSON.parse(msg.data), (error) =>
+            controller.enqueue({
+              type: 'serialized-error',
+              error,
+              eventSource,
+            }),
+          );
         });
         eventSource.addEventListener(PING_EVENT, () => {
           controller.enqueue({
@@ -337,9 +362,20 @@ export function sseStreamConsumer<TConfig extends ConsumerConfig>(
           });
         });
         eventSource.addEventListener(RETURN_EVENT, () => {
-          eventSource.close();
-          controller.close();
-          _es = null;
+          const close = () => {
+            eventSource.close();
+            controller.close();
+            _es = null;
+          };
+          const closeAfterError = () => {
+            eventSource.close();
+            _es = null;
+          };
+          if (deserializeAsync) {
+            void deserializeQueue.then(close, closeAfterError);
+          } else {
+            close();
+          }
         });
         eventSource.addEventListener('error', (event) => {
           if (eventSource.readyState === eventSource.CLOSED) {
@@ -355,18 +391,18 @@ export function sseStreamConsumer<TConfig extends ConsumerConfig>(
         eventSource.addEventListener('message', (_msg) => {
           const msg = _msg as EventSourceLike.MessageEvent;
 
-          const chunk = deserialize(JSON.parse(msg.data));
-
-          const def: SSEvent = {
-            data: chunk,
-          };
-          if (msg.lastEventId) {
-            def.id = msg.lastEventId;
-          }
-          controller.enqueue({
-            type: 'data',
-            data: def as inferTrackedOutput<TConfig['data']>,
-            eventSource,
+          enqueueDeserialized(JSON.parse(msg.data), (chunk) => {
+            const def: SSEvent = {
+              data: chunk,
+            };
+            if (msg.lastEventId) {
+              def.id = msg.lastEventId;
+            }
+            controller.enqueue({
+              type: 'data',
+              data: def as inferTrackedOutput<TConfig['data']>,
+              eventSource,
+            });
           });
         });
 

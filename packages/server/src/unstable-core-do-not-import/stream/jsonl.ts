@@ -106,6 +106,8 @@ export function isPromise(value: unknown): value is Promise<unknown> {
 
 type Serialize = (value: any) => any;
 type Deserialize = (value: any) => any;
+type SerializeAsync = (value: any) => Promise<any>;
+type DeserializeAsync = (value: any) => Promise<any>;
 
 type PathArray = readonly (string | number)[];
 export type ProducerOnError = (opts: {
@@ -114,6 +116,7 @@ export type ProducerOnError = (opts: {
 }) => void;
 export interface JSONLProducerOptions {
   serialize?: Serialize;
+  serializeAsync?: SerializeAsync;
   data: Record<string, unknown> | unknown[];
   onError?: ProducerOnError;
   formatError?: (opts: { error: unknown; path: PathArray }) => unknown;
@@ -281,8 +284,20 @@ async function* createBatchStreamProducer(
 export function jsonlStreamProducer(opts: JSONLProducerOptions) {
   let stream = readableStreamFrom(createBatchStreamProducer(opts));
 
-  const { serialize } = opts;
-  if (serialize) {
+  const { serialize, serializeAsync } = opts;
+  if (serializeAsync) {
+    stream = stream.pipeThrough(
+      new TransformStream({
+        async transform(chunk, controller) {
+          if (chunk === PING_SYM) {
+            controller.enqueue(PING_SYM);
+          } else {
+            controller.enqueue(await serializeAsync(chunk));
+          }
+        },
+      }),
+    );
+  } else if (serialize) {
     stream = stream.pipeThrough(
       new TransformStream({
         transform(chunk, controller) {
@@ -515,6 +530,7 @@ function createStreamsManager(abortController: AbortController) {
 export async function jsonlStreamConsumer<THead>(opts: {
   from: NodeJSReadableStreamEsque | WebReadableStreamEsque;
   deserialize?: Deserialize;
+  deserializeAsync?: DeserializeAsync;
   onError?: ConsumerOnError;
   formatError?: (opts: { error: unknown }) => Error;
   /**
@@ -522,10 +538,18 @@ export async function jsonlStreamConsumer<THead>(opts: {
    */
   abortController: AbortController;
 }) {
-  const { deserialize = (v) => v } = opts;
+  const { deserialize = (v) => v, deserializeAsync } = opts;
 
   let source = createConsumerStream<Head>(opts.from);
-  if (deserialize) {
+  if (deserializeAsync) {
+    source = source.pipeThrough(
+      new TransformStream({
+        async transform(chunk, controller) {
+          controller.enqueue(await deserializeAsync(chunk));
+        },
+      }),
+    );
+  } else if (deserialize) {
     source = source.pipeThrough(
       new TransformStream({
         transform(chunk, controller) {

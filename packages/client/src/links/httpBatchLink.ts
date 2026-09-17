@@ -1,6 +1,9 @@
 import type { AnyRouter, ProcedureType } from '@trpc/server';
 import { observable } from '@trpc/server/observable';
-import { transformResult } from '@trpc/server/unstable-core-do-not-import';
+import {
+  transformResult,
+  transformResultAsync,
+} from '@trpc/server/unstable-core-do-not-import';
 import type { BatchLoader } from '../internals/dataLoader';
 import { dataLoader } from '../internals/dataLoader';
 import { allAbortSignals, raceAbortSignals } from '../internals/signals';
@@ -10,6 +13,7 @@ import type { HTTPBatchLinkOptions } from './HTTPBatchLinkOptions';
 import type { HTTPResult } from './internals/httpUtils';
 import {
   getUrl,
+  getUrlAsync,
   jsonHttpRequester,
   resolveHTTPLinkOptions,
 } from './internals/httpUtils';
@@ -41,15 +45,21 @@ export function httpBatchLink<TRouter extends AnyRouter>(
           const path = batchOps.map((op) => op.path).join(',');
           const inputs = batchOps.map((op) => op.input);
 
-          const url = getUrl({
+          const requestOpts = {
             ...resolvedOpts,
             type,
             path,
             inputs,
             signal: null,
-          });
+          };
 
-          return url.length <= maxURLLength;
+          if (resolvedOpts.transformer.input.serializeAsync) {
+            return getUrlAsync(requestOpts).then(
+              (url) => url.length <= maxURLLength,
+            );
+          }
+
+          return getUrl(requestOpts).length <= maxURLLength;
         },
         async fetch(batchOps) {
           const path = batchOps.map((op) => op.path).join(',');
@@ -111,24 +121,33 @@ export function httpBatchLink<TRouter extends AnyRouter>(
           .then((res) => {
             isDone = true;
             _res = res;
-            const transformed = transformResult(
-              res.json,
-              resolvedOpts.transformer.output,
-            );
+            const handleResult = (
+              transformed: ReturnType<typeof transformResult>,
+            ) => {
+              if (!transformed.ok) {
+                observer.error(
+                  TRPCClientError.from(transformed.error, {
+                    meta: res.meta,
+                  }),
+                );
+                return;
+              }
+              observer.next({
+                context: res.meta,
+                result: transformed.result,
+              });
+              observer.complete();
+            };
 
-            if (!transformed.ok) {
-              observer.error(
-                TRPCClientError.from(transformed.error, {
-                  meta: res.meta,
-                }),
-              );
-              return;
+            if (resolvedOpts.transformer.output.deserializeAsync) {
+              return transformResultAsync(
+                res.json,
+                resolvedOpts.transformer.output,
+              ).then(handleResult);
             }
-            observer.next({
-              context: res.meta,
-              result: transformed.result,
-            });
-            observer.complete();
+            return handleResult(
+              transformResult(res.json, resolvedOpts.transformer.output),
+            );
           })
           .catch((err) => {
             isDone = true;

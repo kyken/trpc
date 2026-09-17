@@ -13,7 +13,9 @@ import type { HTTPResult } from './internals/httpUtils';
 import {
   fetchHTTPResponse,
   getBody,
+  getBodyAsync,
   getUrl,
+  getUrlAsync,
   resolveHTTPLinkOptions,
 } from './internals/httpUtils';
 import type { Operation, TRPCLink } from './types';
@@ -55,15 +57,21 @@ export function httpBatchStreamLink<TRouter extends AnyRouter>(
           const path = batchOps.map((op) => op.path).join(',');
           const inputs = batchOps.map((op) => op.input);
 
-          const url = getUrl({
+          const requestOpts = {
             ...resolvedOpts,
             type,
             path,
             inputs,
             signal: null,
-          });
+          };
 
-          return url.length <= maxURLLength;
+          if (resolvedOpts.transformer.input.serializeAsync) {
+            return getUrlAsync(requestOpts).then(
+              (url) => url.length <= maxURLLength,
+            );
+          }
+
+          return getUrl(requestOpts).length <= maxURLLength;
         },
         async fetch(batchOps) {
           const path = batchOps.map((op) => op.path).join(',');
@@ -81,8 +89,12 @@ export function httpBatchStreamLink<TRouter extends AnyRouter>(
             contentTypeHeader: 'application/json',
             trpcAcceptHeader: 'application/jsonl',
             trpcAcceptHeaderKey: opts.streamHeader ?? 'trpc-accept',
-            getUrl,
-            getBody,
+            getUrl: resolvedOpts.transformer.input.serializeAsync
+              ? getUrlAsync
+              : getUrl,
+            getBody: resolvedOpts.transformer.input.serializeAsync
+              ? getBodyAsync
+              : getBody,
             inputs,
             path,
             headers() {
@@ -106,9 +118,11 @@ export function httpBatchStreamLink<TRouter extends AnyRouter>(
             // propagate the same error to every operation in the batch.
             const json = (await res.json()) as TRPCResponse;
             if ('error' in json) {
-              json.error = resolvedOpts.transformer.output.deserialize(
-                json.error,
-              );
+              json.error = resolvedOpts.transformer.output.deserializeAsync
+                ? await resolvedOpts.transformer.output.deserializeAsync(
+                    json.error,
+                  )
+                : resolvedOpts.transformer.output.deserialize(json.error);
             }
 
             return batchOps.map((): Promise<HTTPResult> =>
@@ -128,6 +142,7 @@ export function httpBatchStreamLink<TRouter extends AnyRouter>(
             from: res.body!,
             deserialize: (data) =>
               resolvedOpts.transformer.output.deserialize(data),
+            deserializeAsync: resolvedOpts.transformer.output.deserializeAsync,
             // onError: console.error,
             formatError(opts) {
               const error = opts.error as TRPCErrorShape;

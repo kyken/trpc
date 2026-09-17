@@ -6,6 +6,7 @@ import type {
   TRPCAcceptHeader,
   TRPCResponse,
 } from '@trpc/server/unstable-core-do-not-import';
+import { isPromise } from '@trpc/server/unstable-core-do-not-import';
 import { getFetch } from '../../getFetch';
 import type {
   FetchEsque,
@@ -89,6 +90,19 @@ export function getInput(opts: GetInputOptions) {
       );
 }
 
+export async function getInputAsync(opts: GetInputOptions) {
+  const serialize = opts.transformer.input.serializeAsync;
+  if (!serialize) {
+    return getInput(opts);
+  }
+
+  return 'input' in opts
+    ? await serialize(opts.input)
+    : arrayToDict(
+        await Promise.all(opts.inputs.map((_input) => serialize(_input))),
+      );
+}
+
 export type HTTPBaseRequestOptions = GetInputOptions &
   ResolvedHTTPLinkOptions & {
     type: ProcedureType;
@@ -97,17 +111,21 @@ export type HTTPBaseRequestOptions = GetInputOptions &
   };
 
 type GetUrl = (opts: HTTPBaseRequestOptions) => string;
+type AsyncGetUrl = (opts: HTTPBaseRequestOptions) => Promise<string>;
 type GetBody = (opts: HTTPBaseRequestOptions) => RequestInitEsque['body'];
+type AsyncGetBody = (
+  opts: HTTPBaseRequestOptions,
+) => Promise<RequestInitEsque['body']>;
 
 export type ContentOptions = {
   trpcAcceptHeader?: TRPCAcceptHeader;
   trpcAcceptHeaderKey?: 'trpc-accept' | 'accept';
   contentTypeHeader?: string;
-  getUrl: GetUrl;
-  getBody: GetBody;
+  getUrl: GetUrl | AsyncGetUrl;
+  getBody: GetBody | AsyncGetBody;
 };
 
-export const getUrl: GetUrl = (opts) => {
+function getUrlWithInput(opts: HTTPBaseRequestOptions, input: unknown) {
   const parts = opts.url.split('?') as [string, string?];
   const base = parts[0].replace(/\/$/, ''); // Remove any trailing slashes
 
@@ -120,16 +138,28 @@ export const getUrl: GetUrl = (opts) => {
   if ('inputs' in opts) {
     queryParts.push('batch=1');
   }
-  if (opts.type === 'query' || opts.type === 'subscription') {
-    const input = getInput(opts);
-    if (input !== undefined && opts.methodOverride !== 'POST') {
-      queryParts.push(`input=${encodeURIComponent(JSON.stringify(input))}`);
-    }
+  if (input !== undefined) {
+    queryParts.push(`input=${encodeURIComponent(JSON.stringify(input))}`);
   }
   if (queryParts.length) {
     url += '?' + queryParts.join('&');
   }
   return url;
+}
+
+function hasQueryInput(opts: HTTPBaseRequestOptions) {
+  return (
+    (opts.type === 'query' || opts.type === 'subscription') &&
+    opts.methodOverride !== 'POST'
+  );
+}
+
+export const getUrl: GetUrl = (opts) =>
+  getUrlWithInput(opts, hasQueryInput(opts) ? getInput(opts) : undefined);
+
+export const getUrlAsync: AsyncGetUrl = async (opts) => {
+  const input = hasQueryInput(opts) ? await getInputAsync(opts) : undefined;
+  return getUrlWithInput(opts, input);
 };
 
 export const getBody: GetBody = (opts) => {
@@ -137,6 +167,14 @@ export const getBody: GetBody = (opts) => {
     return undefined;
   }
   const input = getInput(opts);
+  return input !== undefined ? JSON.stringify(input) : undefined;
+};
+
+export const getBodyAsync: AsyncGetBody = async (opts) => {
+  if (opts.type === 'query' && opts.methodOverride !== 'POST') {
+    return undefined;
+  }
+  const input = await getInputAsync(opts);
   return input !== undefined ? JSON.stringify(input) : undefined;
 };
 
@@ -150,8 +188,8 @@ export const jsonHttpRequester: Requester = (opts) => {
   return httpRequest({
     ...opts,
     contentTypeHeader: 'application/json',
-    getUrl,
-    getBody,
+    getUrl: opts.transformer.input.serializeAsync ? getUrlAsync : getUrl,
+    getBody: opts.transformer.input.serializeAsync ? getBodyAsync : getBody,
   });
 };
 
@@ -215,6 +253,17 @@ export async function fetchHTTPResponse(opts: HTTPRequestOptions) {
       : undefined),
     ...resolvedHeaders,
   };
+
+  if (isPromise(url) || isPromise(body)) {
+    return Promise.all([url, body]).then(([resolvedUrl, resolvedBody]) =>
+      getFetch(opts.fetch)(resolvedUrl, {
+        method,
+        signal: opts.signal,
+        body: resolvedBody,
+        headers,
+      }),
+    );
+  }
 
   return getFetch(opts.fetch)(url, {
     method,

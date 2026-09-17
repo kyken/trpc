@@ -14,7 +14,7 @@ import {
 } from '../@trpc/server';
 import type { TRPCRequestInfo } from '../@trpc/server/http';
 import { type BaseHandlerOptions } from '../@trpc/server/http';
-import { parseTRPCMessage } from '../@trpc/server/rpc';
+import { parseTRPCMessage, parseTRPCMessageAsync } from '../@trpc/server/rpc';
 // @trpc/server/rpc
 import type {
   TRPCClientOutgoingMessage,
@@ -29,8 +29,10 @@ import { isObservable, observableToAsyncIterable } from '../observable';
 import {
   isAsyncIterable,
   isObject,
+  isPromise,
   isTrackedEnvelope,
   run,
+  transformTRPCResponseAsync,
   type MaybePromise,
 } from '../unstable-core-do-not-import';
 // eslint-disable-next-line no-restricted-imports
@@ -120,13 +122,24 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
 
     const clientSubscriptions = new Map<number | string, AbortController>();
     const abortController = new AbortController();
+    let asyncInboundQueue = Promise.resolve();
 
     if (opts.keepAlive?.enabled) {
       const { pingMs, pongWaitMs } = opts.keepAlive;
       handleKeepAlive(client, pingMs, pongWaitMs);
     }
 
-    function respond(untransformedJSON: TRPCResponseMessage) {
+    function respond(
+      untransformedJSON: TRPCResponseMessage,
+    ): void | Promise<void> {
+      if (transformer.output.serializeAsync) {
+        return transformTRPCResponseAsync(
+          router._def._config,
+          untransformedJSON,
+        ).then((transformed) => {
+          client.send(encoder.encode(transformed));
+        });
+      }
       client.send(
         encoder.encode(
           transformTRPCResponse(router._def._config, untransformedJSON),
@@ -168,7 +181,7 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           req,
           input: undefined,
         });
-        respond({
+        const response = respond({
           id: null,
           error: getErrorShape({
             config: router._def._config,
@@ -179,6 +192,9 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
             ctx,
           }),
         });
+        if (isPromise(response)) {
+          await response;
+        }
 
         // close in next tick
         (globalThis.setImmediate ?? globalThis.setTimeout)(() => {
@@ -222,7 +238,7 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           req,
           input: undefined,
         });
-        respond({
+        void respond({
           id,
           jsonrpc,
           error: getErrorShape({
@@ -285,7 +301,7 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
             });
           }
           // send the value as data if the method is not a subscription
-          respond({
+          const response = respond({
             id,
             jsonrpc,
             result: {
@@ -293,6 +309,9 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
               data: result,
             },
           });
+          if (isPromise(response)) {
+            await response;
+          }
           return;
         }
 
@@ -325,6 +344,19 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           ? observableToAsyncIterable(result, abortController.signal)
           : result;
 
+        clientSubscriptions.set(id, abortController);
+
+        const startedResponse = respond({
+          id,
+          jsonrpc,
+          result: {
+            type: 'started',
+          },
+        });
+        if (isPromise(startedResponse)) {
+          await startedResponse;
+        }
+
         run(async () => {
           await using iterator = iteratorResource(iterable);
 
@@ -354,7 +386,7 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
             if (next instanceof Error) {
               const error = getTRPCErrorFromUnknown(next);
               opts.onError?.({ error, path, type, ctx, req, input });
-              respond({
+              const errorResponse = respond({
                 id,
                 jsonrpc,
                 error: getErrorShape({
@@ -366,6 +398,9 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
                   ctx,
                 }),
               });
+              if (isPromise(errorResponse)) {
+                await errorResponse;
+              }
               break;
             }
             if (next.done) {
@@ -386,30 +421,36 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
               };
             }
 
-            respond({
+            const dataResponse = respond({
               id,
               jsonrpc,
               result,
             });
+            if (isPromise(dataResponse)) {
+              await dataResponse;
+            }
 
             // free up references for garbage collection
             next = null;
             result = null;
           }
 
-          respond({
+          const stoppedResponse = respond({
             id,
             jsonrpc,
             result: {
               type: 'stopped',
             },
           });
+          if (isPromise(stoppedResponse)) {
+            await stoppedResponse;
+          }
           clientSubscriptions.delete(id);
-        }).catch((cause) => {
+        }).catch(async (cause) => {
           clientSubscriptions.delete(id);
           const error = getTRPCErrorFromUnknown(cause);
           opts.onError?.({ error, path, type, ctx, req, input });
-          respond({
+          const errorResponse = respond({
             id,
             jsonrpc,
             error: getErrorShape({
@@ -421,22 +462,16 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
               ctx,
             }),
           });
+          if (isPromise(errorResponse)) {
+            await errorResponse;
+          }
           abortController.abort();
         });
-        clientSubscriptions.set(id, abortController);
-
-        respond({
-          id,
-          jsonrpc,
-          result: {
-            type: 'started',
-          },
-        });
-      }).catch((cause) => {
+      }).catch(async (cause) => {
         // procedure threw an error
         const error = getTRPCErrorFromUnknown(cause);
         opts.onError?.({ error, path, type, ctx, req, input });
-        respond({
+        const errorResponse = respond({
           id,
           jsonrpc,
           error: getErrorShape({
@@ -448,6 +483,9 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
             ctx,
           }),
         });
+        if (isPromise(errorResponse)) {
+          await errorResponse;
+        }
       });
     }
     client.on('message', (rawData, isBinary) => {
@@ -473,7 +511,7 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
           code: 'UNPROCESSABLE_CONTENT',
           message: 'Unexpected WebSocket message format',
         });
-        respond({
+        void respond({
           id: null,
           error: getErrorShape({
             config: router._def._config,
@@ -515,35 +553,65 @@ export function getWSConnectionHandler<TRouter extends AnyRouter>(
         return;
       }
 
-      const parsedMsgs = run(() => {
+      const handleParseError = (cause: unknown) => {
+        const error = new TRPCError({
+          code: 'PARSE_ERROR',
+          cause,
+        });
+
+        return respond({
+          id: null,
+          error: getErrorShape({
+            config: router._def._config,
+            error,
+            type: 'unknown',
+            path: undefined,
+            input: undefined,
+            ctx,
+          }),
+        });
+      };
+
+      const parseMessagesAsync = async (): Promise<
+        TRPCClientOutgoingMessage[]
+      > => {
         try {
           const msgJSON: unknown = encoder.decode(data);
           const msgs: unknown[] = Array.isArray(msgJSON) ? msgJSON : [msgJSON];
 
-          return msgs.map((raw) => parseTRPCMessage(raw, transformer));
+          return await Promise.all(
+            msgs.map((raw) => parseTRPCMessageAsync(raw, transformer)),
+          );
         } catch (cause) {
-          const error = new TRPCError({
-            code: 'PARSE_ERROR',
-            cause,
-          });
-
-          respond({
-            id: null,
-            error: getErrorShape({
-              config: router._def._config,
-              error,
-              type: 'unknown',
-              path: undefined,
-              input: undefined,
-              ctx,
-            }),
-          });
-
-          return [];
+          await handleParseError(cause);
+          return [] as TRPCClientOutgoingMessage[];
         }
-      });
+      };
 
-      parsedMsgs.map((msg, index) => handleRequest(msg, index));
+      if (transformer.input.deserializeAsync) {
+        asyncInboundQueue = asyncInboundQueue
+          .then(async () => {
+            const parsedMsgs = await parseMessagesAsync();
+            parsedMsgs.map((msg, index) => void handleRequest(msg, index));
+          })
+          .catch(() => {
+            // parseMessagesAsync reports parse errors to the client
+          });
+      } else {
+        const parsedMsgs = run(() => {
+          try {
+            const msgJSON: unknown = encoder.decode(data);
+            const msgs: unknown[] = Array.isArray(msgJSON)
+              ? msgJSON
+              : [msgJSON];
+            return msgs.map((raw) => parseTRPCMessage(raw, transformer));
+          } catch (cause) {
+            void handleParseError(cause);
+            return [] as TRPCClientOutgoingMessage[];
+          }
+        });
+        parsedMsgs.map((msg, index) => void handleRequest(msg, index));
+      }
     });
 
     // WebSocket errors should be handled, as otherwise unhandled exceptions will crash Node.js.

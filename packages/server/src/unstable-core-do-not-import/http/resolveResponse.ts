@@ -14,7 +14,10 @@ import {
 import type { TRPCResponse } from '../rpc';
 import { isPromise, jsonlStreamProducer } from '../stream/jsonl';
 import { sseHeaders, sseStreamProducer } from '../stream/sse';
-import { transformTRPCResponse } from '../transformer';
+import {
+  transformTRPCResponse,
+  transformTRPCResponseAsync,
+} from '../transformer';
 import {
   abortSignalsAnyPonyfill,
   isAsyncIterable,
@@ -186,6 +189,50 @@ function caughtErrorToData<TRouter extends AnyRouter>(
     error,
     untransformedJSON,
     body,
+  };
+}
+
+async function caughtErrorToDataAsync<TRouter extends AnyRouter>(
+  cause: unknown,
+  errorOpts: {
+    opts: Pick<
+      ResolveHTTPRequestOptions<TRouter>,
+      'onError' | 'req' | 'router'
+    >;
+    ctx: inferRouterContext<TRouter> | undefined;
+    type: ProcedureType | 'unknown';
+    path?: string;
+    input?: unknown;
+  },
+) {
+  const { router, req, onError } = errorOpts.opts;
+  const error = getTRPCErrorFromUnknown(cause);
+  onError?.({
+    error,
+    path: errorOpts.path,
+    input: errorOpts.input,
+    ctx: errorOpts.ctx,
+    type: errorOpts.type,
+    req,
+  });
+  const untransformedJSON = {
+    error: getErrorShape({
+      config: router._def._config,
+      error,
+      type: errorOpts.type,
+      path: errorOpts.path,
+      input: errorOpts.input,
+      ctx: errorOpts.ctx,
+    }),
+  };
+  const transformedJSON = await transformTRPCResponseAsync(
+    router._def._config,
+    untransformedJSON,
+  );
+  return {
+    error,
+    untransformedJSON,
+    body: JSON.stringify(transformedJSON),
   };
 }
 
@@ -442,6 +489,13 @@ export async function resolveResponse<TRouter extends AnyRouter>(
             headers,
             untransformedJSON: [res],
           });
+          if (config.transformer.output.serializeAsync) {
+            const transformed = await transformTRPCResponseAsync(config, res);
+            return new Response(JSON.stringify(transformed), {
+              status: headResponse.status,
+              headers,
+            });
+          }
           return new Response(
             JSON.stringify(transformTRPCResponse(config, res)),
             {
@@ -486,6 +540,7 @@ export async function resolveResponse<TRouter extends AnyRouter>(
             ...config.sse,
             data: iterable,
             serialize: (v) => config.transformer.output.serialize(v),
+            serializeAsync: config.transformer.output.serializeAsync,
             formatError(errorOpts) {
               const error = getTRPCErrorFromUnknown(errorOpts.error);
               const input = call?.result();
@@ -625,6 +680,7 @@ export async function resolveResponse<TRouter extends AnyRouter>(
           };
         }),
         serialize: (data) => config.transformer.output.serialize(data),
+        serializeAsync: config.transformer.output.serializeAsync,
         onError: (cause) => {
           opts.onError?.({
             error: getTRPCErrorFromUnknown(cause.error),
@@ -730,6 +786,16 @@ export async function resolveResponse<TRouter extends AnyRouter>(
       headers,
     });
 
+    if (config.transformer.output.serializeAsync) {
+      const transformed = await transformTRPCResponseAsync(
+        config,
+        resultAsRPCResponse,
+      );
+      return new Response(JSON.stringify(transformed), {
+        status: headResponse.status,
+        headers,
+      });
+    }
     return new Response(
       JSON.stringify(transformTRPCResponse(config, resultAsRPCResponse)),
       {
@@ -747,11 +813,18 @@ export async function resolveResponse<TRouter extends AnyRouter>(
     // - post body is too large
     // - input deserialization fails
     // - `errorFormatter` return value is malformed
-    const { error, untransformedJSON, body } = caughtErrorToData(cause, {
-      opts,
-      ctx: ctxManager.valueOrUndefined(),
-      type: info?.type ?? 'unknown',
-    });
+    const caughtError = config.transformer.output.serializeAsync
+      ? await caughtErrorToDataAsync(cause, {
+          opts,
+          ctx: ctxManager.valueOrUndefined(),
+          type: info?.type ?? 'unknown',
+        })
+      : caughtErrorToData(cause, {
+          opts,
+          ctx: ctxManager.valueOrUndefined(),
+          type: info?.type ?? 'unknown',
+        });
+    const { error, untransformedJSON, body } = caughtError;
 
     const headResponse = initResponse({
       ctx,

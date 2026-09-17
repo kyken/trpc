@@ -113,8 +113,10 @@ const jsonContentTypeHandler: ContentTypeHandler = {
 
       if (!isBatchCall) {
         const result: InputRecord = emptyObject();
-        result[0] =
-          opts.router._def._config.transformer.input.deserialize(inputs);
+        const transformer = opts.router._def._config.transformer.input;
+        result[0] = transformer.deserializeAsync
+          ? await transformer.deserializeAsync(inputs)
+          : transformer.deserialize(inputs);
         return result;
       }
 
@@ -125,11 +127,13 @@ const jsonContentTypeHandler: ContentTypeHandler = {
         });
       }
       const acc: InputRecord = emptyObject();
+      const transformer = opts.router._def._config.transformer.input;
       for (const index of paths.keys()) {
         const input = inputs[index];
         if (input !== undefined) {
-          acc[index] =
-            opts.router._def._config.transformer.input.deserialize(input);
+          acc[index] = transformer.deserializeAsync
+            ? await transformer.deserializeAsync(input)
+            : transformer.deserialize(input);
         }
       }
 
